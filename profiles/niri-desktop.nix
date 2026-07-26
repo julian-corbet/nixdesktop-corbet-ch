@@ -167,11 +167,13 @@ in
     };
   };
 
+  # NO `default` here, and the definition below is unconditional. `readOnly` permits exactly one
+  # definition, and a default combined with a `mkIf`-guarded definition counts as two — the
+  # profile fails to evaluate the moment it is enabled. So the empty-when-disabled case is
+  # expressed in the value, not by withholding the definition.
   options.nixdesktop.want = lib.mkOption {
     type = lib.types.attrs;
     readOnly = true;
-    internal = false;
-    default = { };
     description = ''
       READ-ONLY, computed. The resolved role set a platform backend consumes to produce real
       packages. This is the entire contract between nixdesktop and a backend — a backend that
@@ -180,25 +182,23 @@ in
     '';
   };
 
-  config = lib.mkIf cfg.enable {
-    nixdesktop.want = {
-      compositor = "niri";
-      inherit (cfg)
-        bar
-        notifications
-        fileManager
-        polkitAgent
-        keyring
-        launcher
-        terminal
-        osd
-        screenshots
-        xwayland
-        clipboardHistory
-        idleAndLock
-        portals
-        extraComponents
-        ;
-    };
+  config.nixdesktop.want = lib.optionalAttrs cfg.enable {
+    compositor = "niri";
+    inherit (cfg)
+      bar
+      notifications
+      fileManager
+      polkitAgent
+      keyring
+      launcher
+      terminal
+      osd
+      screenshots
+      xwayland
+      clipboardHistory
+      idleAndLock
+      portals
+      extraComponents
+      ;
   };
 }
