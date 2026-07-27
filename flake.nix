@@ -48,7 +48,7 @@
       # they assume the named binaries exist, which is the backend's job.
       #
       # `homeManagerModules`, not `homeModules`: home-manager upstream has moved to the shorter
-      # name, but every other project in this family (nixarch, nixfish, nixremote) exports
+      # name, but every other project in this family (nixarch, nixsh, nixremote) exports
       # `homeManagerModules`, and a consumer importing four of them at once should not have to
       # remember which one is spelled differently. Family consistency wins over upstream fashion.
       homeManagerModules = {
