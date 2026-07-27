@@ -6,7 +6,7 @@
 # 1. THE EGL-VENDOR-ICD FIX. nixpkgs' own Mesa doesn't self-register an EGL vendor ICD the way
 #    NixOS's system module does -- any nix-built GPU/EGL client fails outright on a non-NixOS host
 #    with `eglGetDisplay failed` unless __EGL_VENDOR_LIBRARY_FILENAMES points at it explicitly.
-#    Proven live on archlxc 2026-07-23: both `eglinfo` and niri itself (nix-built, nested) hit the
+#    Proven live on an Arch container 2026-07-23: both `eglinfo` and niri itself (nix-built, nested) hit the
 #    identical crash; both fixed by the same one variable. With it set, noctalia went on to render
 #    a real bar on the real 4K output with a real "AMD Radeon RX 6800 (radeonsi, navi21...) OpenGL
 #    ES 3.2 Mesa" context, connected to upower/logind/pipewire/wireplumber/bluetooth cleanly, and
@@ -33,7 +33,7 @@ in
         wpa_supplicant, or iwd over D-Bus -- confirmed from its own source
         (src/dbus/network/{network_manager,wpa_supplicant,iwd}_service.cpp): there is no
         systemd-networkd backend at all. Set false on hosts that run systemd-networkd instead
-        (e.g. archlxc), where the widget would otherwise sit permanently empty for nothing it can
+        (a common container setup), where the widget would otherwise sit permanently empty for nothing it can
         ever show.
       '';
     };
