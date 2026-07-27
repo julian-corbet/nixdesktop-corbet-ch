@@ -12,7 +12,7 @@
   # GPU client needs on a non-NixOS host, plus startup wiring); a consumer who wants noctalia
   # adds the upstream flake as their own input and imports both modules together:
   #
-  #   imports = [ inputs.noctalia.homeModules.default inputs.nixdesktop.homeModules.noctalia ];
+  #   imports = [ inputs.noctalia.homeModules.default inputs.nixdesktop.homeManagerModules.noctalia ];
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }:
@@ -30,12 +30,19 @@
       # neither NixOS-specific nor system-manager-specific config. Import it wherever the
       # backend that reads it lives.
       systemManagerModules.niri-desktop = ./profiles/niri-desktop.nix;
+      systemManagerModules.default = ./profiles/niri-desktop.nix;
       nixosModules.niri-desktop = ./profiles/niri-desktop.nix;
+      nixosModules.default = ./profiles/niri-desktop.nix;
 
       # ── CONFIG GENERATION ─────────────────────────────────────────────────────────────────
       # home-manager modules that write real dotfiles. None of these install packages either:
       # they assume the named binaries exist, which is the backend's job.
-      homeModules = {
+      #
+      # `homeManagerModules`, not `homeModules`: home-manager upstream has moved to the shorter
+      # name, but every other project in this family (nixarch, nixfish, nixremote) exports
+      # `homeManagerModules`, and a consumer importing four of them at once should not have to
+      # remember which one is spelled differently. Family consistency wins over upstream fashion.
+      homeManagerModules = {
         niri = ./home/niri.nix;
         waybar = ./home/waybar.nix;
         mako = ./home/mako.nix;
@@ -44,8 +51,12 @@
         eww = ./home/eww.nix;
 
         # Supplement only — see the input comment above. Import alongside
-        # `noctalia.homeModules.default` from noctalia's own flake.
+        # `noctalia.homeModules.default` from noctalia's own flake (theirs, not ours — noctalia
+        # is an unrelated upstream project and uses the short spelling).
         noctalia = ./home/noctalia.nix;
+
+        # niri is the module this project exists for; everything else decorates it.
+        default = ./home/niri.nix;
       };
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);

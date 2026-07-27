@@ -37,13 +37,13 @@ nixdesktop.niriDesktop = {
 | Module | Class | Owns |
 |---|---|---|
 | `niri-desktop` | system-manager / NixOS | the role policy; publishes `nixdesktop.want` |
-| `homeModules.niri` | home-manager | `~/.config/niri/config.kdl` — layout, binds, workspaces, idle/lock, startup |
-| `homeModules.waybar` | home-manager | bar config + style |
-| `homeModules.mako` | home-manager | notification daemon config |
-| `homeModules.swaylock` | home-manager | lock screen appearance |
-| `homeModules.nwgBar` | home-manager | power menu |
-| `homeModules.eww` | home-manager | widget toolkit scaffolding |
-| `homeModules.noctalia` | home-manager | supplement to noctalia's own upstream module (see below) |
+| `homeManagerModules.niri` | home-manager | `~/.config/niri/config.kdl` — layout, binds, workspaces, idle/lock, startup |
+| `homeManagerModules.waybar` | home-manager | bar config + style |
+| `homeManagerModules.mako` | home-manager | notification daemon config |
+| `homeManagerModules.swaylock` | home-manager | lock screen appearance |
+| `homeManagerModules.nwgBar` | home-manager | power menu |
+| `homeManagerModules.eww` | home-manager | widget toolkit scaffolding |
+| `homeManagerModules.noctalia` | home-manager | supplement to noctalia's own upstream module (see below) |
 
 ## Defaults are evidence, not taste
 
@@ -80,14 +80,14 @@ and worth knowing. Every one of these is a plain option so the trade stays yours
 
 ## noctalia
 
-`homeModules.noctalia` is a **supplement**, not a replacement for noctalia's own module — it adds
+`homeManagerModules.noctalia` is a **supplement**, not a replacement for noctalia's own module — it adds
 the EGL-vendor-ICD fix a nix-built GPU client needs on a non-NixOS host, plus startup wiring.
 noctalia is deliberately *not* a flake input here: inputs are fetched on every evaluation, so
 declaring it would put a QML shell in the closure of every consumer, including the majority
 running waybar. Add it as your own input and import both:
 
 ```nix
-imports = [ inputs.noctalia.homeModules.default inputs.nixdesktop.homeModules.noctalia ];
+imports = [ inputs.noctalia.homeModules.default inputs.nixdesktop.homeManagerModules.noctalia ];
 ```
 
 ## Status
