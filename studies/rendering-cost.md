@@ -1,6 +1,6 @@
 # The rendering-cost constraint
 
-Every default in `profiles/niri-desktop.nix` follows from one measured finding: **a Wayland
+Every default in `profiles/desktop.nix` follows from one measured finding: **a Wayland
 desktop component that drives a GPU scene graph costs real, permanent VRAM for work a CPU-side
 toolkit does for free.**
 

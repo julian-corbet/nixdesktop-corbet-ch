@@ -1,10 +1,12 @@
-# home/session.nix — turns niri session components (a bar, a notifier, watchers, an idle daemon,
-# a polkit agent, a keyring) into systemd user services, sibling to home/niri.nix and
-# home/waybar.nix.
+# home/session.nix — turns desktop session components (a bar, a notifier, watchers, an idle
+# daemon, a polkit agent, a keyring) into systemd user services, compositor-neutral itself and
+# sibling to the other home/*.nix modules in this repo.
 #
-# THE PROBLEM THIS REPLACES. home/niri.nix currently emits `spawn-at-startup` / `spawn-sh-at-
-# startup` lines into config.kdl for exactly these components. Those run once, at niri session
-# start, and niri has no way to run them again later. This breaks in three concrete ways, all
+# THE PROBLEM THIS REPLACES. A compositor's own config module (this repo's home/niri.nix,
+# before it moved out to nixniri; nixniri's home/niri.nix today) would otherwise emit
+# `spawn-at-startup` / `spawn-sh-at-startup` lines into config.kdl for exactly these components.
+# Those run once, at compositor session start, and niri (the compositor this was originally
+# verified against) has no way to run them again later. This breaks in three concrete ways, all
 # observed on a real running session:
 #
 #   1. niri live-reloads config.kdl on every change, so a `home-manager switch` updates binds and
@@ -67,7 +69,7 @@
 #
 # Nothing here installs anything, same reasoning as every other module in this project: package
 # names and binary paths are platform-specific, so `command` is always a string the consumer (or a
-# platform backend, via profiles/niri-desktop.nix) supplies.
+# platform backend, via profiles/desktop.nix) supplies.
 { lib, config, ... }:
 let
   cfg = config.nixdesktop.session;
@@ -184,7 +186,7 @@ let
 in
 {
   options.nixdesktop.session = {
-    enable = lib.mkEnableOption "session components as systemd user services, bound to niri's graphical-session.target";
+    enable = lib.mkEnableOption "session components as systemd user services, bound to the compositor's graphical-session.target (verified against niri's own shipped unit; see the header comment)";
 
     services = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule ({ name, ... }: {
@@ -278,10 +280,10 @@ in
             default = [ "graphical-session.target" ];
             description = ''
               Start only once these units are active. Ordering after graphical-session.target
-              specifically means "only once niri.service has confirmed startup" (niri.service
-              binds and precedes the target, and is Type=notify, so the target is not reached
-              until niri itself says it is ready) -- this is what replaces the `sleep 1` guess
-              home/niri.nix currently uses for waybar.
+              specifically means "only once the compositor's own session unit has confirmed
+              startup" (niri.service, on niri -- see the header comment -- binds and precedes the
+              target, and is Type=notify, so the target is not reached until the compositor
+              itself says it is ready) -- this is what replaces a `sleep 1` guess.
             '';
           };
 
@@ -349,9 +351,9 @@ in
         type = lib.types.str;
         default = "swayosd-server";
         description = ''
-          OSD server command. Pairs with home/niri.nix's `osd = "swayosd"`, which binds the
-          volume/brightness/mic-mute keys to swayosd-client -- the client has nothing to talk to
-          until this server is running.
+          OSD server command. Pairs with a compositor module's own `osd = "swayosd"`-style option
+          (nixniri's `niri.osd`, for instance), which binds the volume/brightness/mic-mute keys
+          to swayosd-client -- the client has nothing to talk to until this server is running.
         '';
       };
     };
@@ -369,21 +371,20 @@ in
           Full swayidle invocation, timeouts and lock command already assembled.
 
           DESIGN DECISION: this module takes a finished command rather than owning the assembly
-          (timeouts + lock command -> one swayidle line). home/niri.nix already assembles exactly
-          this string, from its own `idle.lockAfterSeconds`/`idle.suspendAfterSeconds`/
-          `lockCommand` options, to emit as a spawn-sh-at-startup line. Reimplementing that
-          assembly here would give the same feature two independently-maintained copies that can
-          silently drift apart. Owning the systemd MECHANISM (this file's actual job) and owning
-          the swayidle-specific ASSEMBLY (niri.nix's existing job) are different concerns, and the
-          sibling modules already keep those apart elsewhere (e.g. waybar.nix takes a finished
-          `settings`/`modules` attrset rather than knowing anything about bar layout).
+          (timeouts + lock command -> one swayidle line). A compositor module typically already
+          assembles exactly this string from its own idle-timeout options -- nixniri's niri.nix
+          does, exposing it as the read-only `nixniri.niri.idle.command` (see nixniri's own
+          README for the full cross-repo contract). Reimplementing that assembly here would give
+          the same feature two independently-maintained copies that can silently drift apart.
+          Owning the systemd MECHANISM (this file's actual job) and owning the swayidle-specific
+          ASSEMBLY (the compositor module's job) are different concerns, and the sibling modules
+          already keep those apart elsewhere (e.g. waybar.nix takes a finished `settings`/
+          `modules` attrset rather than knowing anything about bar layout).
 
-          CONSEQUENCE: niri.nix currently has no output for that assembled string besides the
-          spawn line being replaced here, so whoever wires this module in (removing that spawn
-          line) needs to either duplicate the assembly once at the call site, or -- better, and
-          not done in this file -- have niri.nix expose it as a plain read-only value the way
-          profiles/niri-desktop.nix exposes `nixdesktop.want`. This option does not take a
-          position on which; it only requires a string.
+          CONSEQUENCE: nixdesktop does not wire the two together automatically -- now that
+          policy/session and compositor config are separate flakes, not just separate files, the
+          consumer connects them explicitly at their own top-level config, e.g.:
+          `nixdesktop.session.idleAndLock.command = config.nixniri.niri.idle.command;`
         '';
       };
     };
@@ -395,8 +396,11 @@ in
         example = "/usr/lib/mate-polkit/polkit-mate-authentication-agent-1";
         description = ''
           Polkit agent invocation -- realistically a full binary path, since every agent ships at
-          a different location on every platform. Same value, same reasoning, as home/niri.nix's
-          `polkitAgentCommand`.
+          a different location on every platform. A platform backend that resolves
+          `nixdesktop.want.polkitAgent` already knows this path (this repo's own
+          `modules/nixos-backend.nix`, via `lib/nixos-roles.nix`'s `polkitAgents.<name>.command`;
+          nixarch's Arch backend has the equivalent) -- wire it through from there rather than
+          hand-typing it, the same way you would for `keyring.command` below.
         '';
       };
     };
@@ -407,9 +411,10 @@ in
         type = lib.types.str;
         example = "gnome-keyring-daemon --start --components=secrets";
         description = ''
-          Keyring daemon invocation. Same reasoning as home/niri.nix's `keyringCommand`: only ever
-          set one provider, since two racing for the same D-Bus name is a confusing failure that
-          presents as apps intermittently losing their stored secrets.
+          Keyring daemon invocation -- same `lib/nixos-roles.nix`'s `keyrings.<name>.command`
+          pointer as `polkitAgent.command` above. Only ever set one provider: two racing for the
+          same D-Bus name is a confusing failure that presents as apps intermittently losing
+          their stored secrets.
 
           DESIGN DECISION: rendered with `serviceType = "forking"` and `restart = "no"`, unlike
           every other well-known component here. gnome-keyring-daemon -- the well-known

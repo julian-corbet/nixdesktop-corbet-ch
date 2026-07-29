@@ -12,18 +12,27 @@
 #    ES 3.2 Mesa" context, connected to upower/logind/pipewire/wireplumber/bluetooth cleanly, and
 #    shut down without error.
 #
-# 2. STARTUP. This stack doesn't run `niri --session` (no wayland.systemd.target for noctalia's
-#    own bundled systemd unit to hang PartOf/After off), so noctalia is spawned the same proven way
-#    waybar was: via niri's own spawn-sh-at-startup, guarded by the same sleep-1 startup-race fix
-#    documented in home/niri.nix. programs.noctalia.systemd.enable is left off.
+# 2. STARTUP. This stack doesn't run a compositor session target that noctalia's own bundled
+#    systemd unit could hang PartOf/After off (see home/session.nix for that story on niri), so
+#    rather than writing directly into one compositor's own startup option -- which would hard-fail
+#    to evaluate for any consumer not importing that compositor's module, and has no path at all
+#    for a compositor this repo has never heard of -- this module appends a plain shell command to
+#    nixdesktop's own compositor-neutral `nixdesktop.startup` list (home/startup.nix). Whichever
+#    compositor module the consumer pairs this with (nixniri, nixscroll, ...) is expected to read
+#    `config.nixdesktop.startup` and wrap each entry in its own native startup syntax; see that
+#    option's own doc and the README's startup-contract section. The sleep-1 startup-race guard
+#    waybar historically needed is baked straight into the command string below.
+#    programs.noctalia.systemd.enable is left off.
 { lib, config, pkgs, ... }:
 let
   cfg = config.nixdesktop.noctalia;
   eglVendorFix = "__EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json";
 in
 {
+  imports = [ ./startup.nix ];
+
   options.nixdesktop.noctalia = {
-    enable = lib.mkEnableOption "noctalia v5 as the niri shell (bar/tray/notifications), replacing waybar+mako";
+    enable = lib.mkEnableOption "noctalia v5 as the desktop shell (bar/tray/notifications), replacing waybar+mako";
 
     networkWidget = lib.mkOption {
       type = lib.types.bool;
@@ -64,8 +73,11 @@ in
       ];
     };
 
-    nixdesktop.niri.extraStartup = [
-      ''spawn-sh-at-startup "sleep 1 && ${eglVendorFix} ${lib.getExe config.programs.noctalia.package}"''
+    # Plain shell command, no compositor-specific wrapping -- see home/startup.nix and the
+    # header comment above for why this no longer writes into a specific compositor's own
+    # namespace.
+    nixdesktop.startup = [
+      "sleep 1 && ${eglVendorFix} ${lib.getExe config.programs.noctalia.package}"
     ];
   };
 }

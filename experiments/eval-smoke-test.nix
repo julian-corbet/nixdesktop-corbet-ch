@@ -13,10 +13,13 @@ let
 
   eval = lib.evalModules {
     modules = [
-      ../profiles/niri-desktop.nix
+      ../profiles/desktop.nix
       {
-        nixdesktop.niriDesktop = {
+        nixdesktop.desktop = {
           enable = true;
+          # `compositor` has no default -- a consumer must state it (see that option's own doc).
+          # niri here is just this test's own pick; any string would resolve the same way.
+          compositor = "niri";
           # Override two defaults so the test would catch a profile that silently ignores input.
           fileManager = "nautilus";
           osd = "swayosd";
@@ -38,6 +41,11 @@ in
     && want.keyring == "gnome-keyring"
     && want.terminal == "foot";
 
+  # `compositor` reaches `want` unchanged -- it has no default of its own (unlike every other
+  # role here), so this is the one role whose presence in `want` proves the consumer's own value
+  # made it through rather than a baked-in literal.
+  compositorReachesWant = want.compositor == "niri";
+
   # Consumer overrides actually reach `want` -- the whole contract with a backend.
   overridesApply =
     want.fileManager == "nautilus"
@@ -48,7 +56,7 @@ in
   disabledIsEmpty =
     let
       off = lib.evalModules {
-        modules = [ ../profiles/niri-desktop.nix { nixdesktop.niriDesktop.enable = false; } ];
+        modules = [ ../profiles/desktop.nix { nixdesktop.desktop.enable = false; } ];
       };
     in
     off.config.nixdesktop.want == { };

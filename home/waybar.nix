@@ -1,10 +1,16 @@
-# home/waybar.nix — declarative waybar config (home-manager), sibling to home/niri.nix.
+# home/waybar.nix — declarative waybar config (home-manager), sibling to the other home/*.nix
+# modules in this repo. Compositor-neutral: waybar itself doesn't care which compositor is
+# feeding it, so nothing here names one. (The "niri/workspaces" module name that shows up in the
+# examples below is only an example -- waybar ships a `<compositor>/workspaces` module per
+# supported compositor, and which one a consumer wires up is entirely their own `settings`/
+# `modules` values, never a default this file picks for them.)
 #
-# LEAN BY DESIGN, same doctrine as home/niri.nix: this module owns the mechanism (JSON/CSS
-# generation, file placement), not a specific theme or module list. `settings`/`modules` accept
-# arbitrary attrsets (waybar has dozens of module types with different shapes -- a fully-typed
-# schema for all of them isn't worth it), and `style` is raw CSS text. A consumer's actual bar
-# layout, module choices, and color scheme belong in their own config layer, not this file.
+# LEAN BY DESIGN, same doctrine as every other home/*.nix module here: this module owns the
+# mechanism (JSON/CSS generation, file placement), not a specific theme or module list.
+# `settings`/`modules` accept arbitrary attrsets (waybar has dozens of module types with
+# different shapes -- a fully-typed schema for all of them isn't worth it), and `style` is raw
+# CSS text. A consumer's actual bar layout, module choices, and color scheme belong in their own
+# config layer, not this file.
 { lib, config, ... }:
 let
   cfg = config.nixdesktop.waybar;

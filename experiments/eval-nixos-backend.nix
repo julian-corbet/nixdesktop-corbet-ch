@@ -1,7 +1,9 @@
 # Throwaway eval smoke test -- NOT part of the module surface. Confirms modules/nixos-backend.nix
 # evaluates alongside the policy profile and that the DEFAULT `nixdesktop.want` (the same defaults
 # eval-smoke-test.nix checks at the policy layer) actually resolves to real nixpkgs packages, not
-# just role names. Safe to delete; nothing imports this file.
+# just role names -- plus that a compositor with no nixpkgs package can be supplied by the
+# consumer via `extraCompositors` without editing this repo. Safe to delete; nothing imports this
+# file.
 #
 # Uses a bare `lib.evalModules` with two STUB options (`environment.systemPackages`,
 # `xdg.portal.{enable,extraPortals}`) rather than a real `nixosSystem`, for the same reason
@@ -36,11 +38,14 @@ let
   eval = lib.evalModules {
     specialArgs = { inherit pkgs; };
     modules = [
-      ../profiles/niri-desktop.nix
+      ../profiles/desktop.nix
       ../modules/nixos-backend.nix
       stubOptions
       {
-        nixdesktop.niriDesktop.enable = true;
+        # `compositor` has no default at the policy layer -- this test states one, same as any
+        # real consumer must.
+        nixdesktop.desktop.enable = true;
+        nixdesktop.desktop.compositor = "niri";
         nixdesktop.nixosBackend.enable = true;
       }
     ];
@@ -50,11 +55,12 @@ let
 
   installedPnames = pnamesOf eval.config.environment.systemPackages;
 
-  # Every default role from profiles/niri-desktop.nix, resolved. bar=waybar, notifications=mako,
+  # Every default role from profiles/desktop.nix, resolved. bar=waybar, notifications=mako,
   # fileManager=thunar (+ its floor: tumbler, gvfs, thunar-volman), polkitAgent=mate-polkit,
   # keyring=gnome-keyring, launcher=fuzzel, terminal=foot, osd=null (nothing),
-  # screenshots/xwayland/clipboardHistory/idleAndLock=true, compositor=niri (+ brightnessctl,
-  # playerctl). portals=true does NOT appear here -- it is not a systemPackages role, see below.
+  # screenshots/xwayland/clipboardHistory/idleAndLock=true, compositor=niri (this test's own
+  # explicit pick, + brightnessctl, playerctl). portals=true does NOT appear here -- it is not a
+  # systemPackages role, see below.
   expectedDefaultPnames = pnamesOf [
     pkgs.waybar
     pkgs.mako
@@ -91,7 +97,7 @@ rec {
   # negative check confirms no Arch-style path snuck in some other way.
   polkitCommandIsStorePath =
     roles.polkitAgents.mate-polkit.command
-      == "${pkgs.mate-polkit}/libexec/polkit-mate-authentication-agent-1"
+    == "${pkgs.mate-polkit}/libexec/polkit-mate-authentication-agent-1"
     && !lib.hasPrefix "/usr/lib/" roles.polkitAgents.mate-polkit.command;
 
   # `portals = true` (the profile default) is handled explicitly through the real xdg.portal
@@ -110,18 +116,52 @@ rec {
       off = lib.evalModules {
         specialArgs = { inherit pkgs; };
         modules = [
-          ../profiles/niri-desktop.nix
+          ../profiles/desktop.nix
           ../modules/nixos-backend.nix
           stubOptions
-          { nixdesktop.niriDesktop.enable = true; nixdesktop.nixosBackend.enable = false; }
+          {
+            nixdesktop.desktop.enable = true;
+            nixdesktop.desktop.compositor = "niri";
+            nixdesktop.nixosBackend.enable = false;
+          }
         ];
       };
     in
     off.config.environment.systemPackages == [ ] && off.config.xdg.portal.enable == false;
 
+  # A compositor with no nixpkgs package (scroll, in reality) resolves via `extraCompositors`,
+  # threaded from the backend's own option into lib/nixos-roles.nix's `compositors` table, with
+  # no edit to this repo required -- `pkgs.hello` stands in for "some package a sibling
+  # compositor-module flake supplies", since the point under test is the plumbing, not any real
+  # compositor's derivation.
+  extraCompositorResolves =
+    let
+      extraEval = lib.evalModules {
+        specialArgs = { inherit pkgs; };
+        modules = [
+          ../profiles/desktop.nix
+          ../modules/nixos-backend.nix
+          stubOptions
+          {
+            nixdesktop.desktop.enable = true;
+            nixdesktop.desktop.compositor = "fakecomp";
+            nixdesktop.nixosBackend.enable = true;
+            nixdesktop.nixosBackend.extraCompositors.fakecomp = [ pkgs.hello ];
+          }
+        ];
+      };
+    in
+    builtins.elem "hello" (pnamesOf extraEval.config.environment.systemPackages)
+    # niri itself must still resolve out of the box, unaffected by another compositor's entry.
+    && (import ../lib/nixos-roles.nix {
+      inherit lib pkgs;
+      extraCompositors = { fakecomp = [ pkgs.hello ]; };
+    }).compositors.niri == roles.compositors.niri;
+
   ok =
     defaultsResolve
     && polkitCommandIsStorePath
     && portalsWiredThroughXdgPortal
-    && disabledBackendInstallsNothing;
+    && disabledBackendInstallsNothing
+    && extraCompositorResolves;
 }

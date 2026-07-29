@@ -1,5 +1,6 @@
 # lib/nixos-roles.nix — the NixOS resolution tables for nixdesktop's roles. Pure data (a function
-# of `pkgs`), no module system: imported by modules/nixos-backend.nix (the only consumer today) and
+# of `pkgs`, plus an optional consumer-supplied compositor table — see `compositors` below), no
+# module system: imported by modules/nixos-backend.nix (the only consumer today) and
 # available to a future paired home-manager module the same way nixarch's home/desktop.nix reads
 # lib/desktop-roles.nix — for the same reason: the polkit agent's package and the polkit agent's
 # spawn command are the same fact, and keeping them in one attrset means a system-layer module and
@@ -33,7 +34,7 @@
 # layout — mate-polkit in particular installs straight to `$out/libexec/`, with none of the
 # `mate-polkit/`-named subdirectory Arch's own packaging adds, so copying the Arch path across
 # platforms would have silently pointed at a directory that doesn't exist.
-{ lib, pkgs }:
+{ lib, pkgs, extraCompositors ? { } }:
 rec {
   # ── Roles whose implementation is a named choice ────────────────────────────────────────────
 
@@ -129,7 +130,17 @@ rec {
   # The compositor plus what its own default keybinds shell out to. niri's stock media and
   # brightness binds call these by name, so a compositor installed without them has keys that
   # silently do nothing.
-  compositors.niri = [ pkgs.niri pkgs.brightnessctl pkgs.playerctl ];
+  #
+  # EXTENSIBLE, NOT CLOSED. niri is the only compositor with a nixpkgs package today; scroll (a
+  # niri fork) has none, and future compositor-module repos won't necessarily either. Hardcoding
+  # scroll's derivation here would mean this file — and a new release of this repo — has to be
+  # edited every time a sibling compositor-module repo shows up, exactly the coupling the rest of
+  # this project avoids for every other role. `extraCompositors` (this file's own function
+  # argument, threaded in from `modules/nixos-backend.nix`'s identically-named option) is merged
+  # in on top instead, so a consumer pairs this backend with, say, nixscroll by supplying
+  # `{ scroll = [ nixscroll-flake.packages.${system}.scroll ]; }` — no edit to this file, no new
+  # release of this repo needed. niri needs no such entry; it already resolves out of the box.
+  compositors = { niri = [ pkgs.niri pkgs.brightnessctl pkgs.playerctl ]; } // extraCompositors;
 
   # ── Resolution ──────────────────────────────────────────────────────────────────────────────
 

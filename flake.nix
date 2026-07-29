@@ -1,8 +1,15 @@
 {
-  description = "nixdesktop — a declarative, CPU-rendered Wayland desktop (niri), as home-manager modules plus a platform-neutral policy profile";
+  description = "nixdesktop — the compositor-neutral desktop policy and shared-component layer for a declarative, CPU-rendered Wayland desktop, as home-manager modules plus a platform-neutral policy profile";
 
   # DELIBERATELY ONE INPUT. This flake pulls no desktop shell, no compositor, no package set —
   # it generates config and declares roles, and both of those are pure Nix.
+  #
+  # NOT EVEN THE COMPOSITOR ITSELF IS AN INPUT. This repo used to ship niri's own home-manager
+  # module (home/niri.nix); it has moved out to its own sibling repo, nixniri, so this flake can
+  # stay genuinely compositor-neutral rather than pulling in one compositor's config generator by
+  # default. Pair this flake with nixniri (niri), nixscroll (scroll), or any future compositor
+  # repo that speaks the same `nixdesktop.want.compositor` contract — see profiles/desktop.nix
+  # and the README's "The split" section.
   #
   # In particular noctalia (a QML shell, supported by home/noctalia.nix) is NOT an input here,
   # though nixarch carried it as one while these modules lived there. A flake input is fetched
@@ -21,41 +28,45 @@
     in
     {
       # ── POLICY ────────────────────────────────────────────────────────────────────────────
-      # Platform-neutral: declares which roles a niri session wants filled and publishes the
-      # result as the read-only `nixdesktop.want` attrset. Installs nothing. A platform backend
-      # (nixarch's, for Arch/CachyOS) reads `nixdesktop.want` and produces real packages.
+      # Compositor-neutral: declares which roles a desktop session wants filled — and, via the
+      # `compositor` option, which compositor is in use at all — and publishes the result as the
+      # read-only `nixdesktop.want` attrset. Installs nothing. A platform backend (nixarch's, for
+      # Arch/CachyOS, or this repo's own `nixosModules.backend`) reads `nixdesktop.want` and
+      # produces real packages.
       #
       # Exposed under both module classes because the two module systems that consume it differ
       # by host, and the profile itself is just options + a computed attrset — it touches
       # neither NixOS-specific nor system-manager-specific config. Import it wherever the
       # backend that reads it lives.
-      systemManagerModules.niri-desktop = ./profiles/niri-desktop.nix;
-      systemManagerModules.default = ./profiles/niri-desktop.nix;
-      nixosModules.niri-desktop = ./profiles/niri-desktop.nix;
-      nixosModules.default = ./profiles/niri-desktop.nix;
+      systemManagerModules.desktop = ./profiles/desktop.nix;
+      systemManagerModules.default = ./profiles/desktop.nix;
+      nixosModules.desktop = ./profiles/desktop.nix;
+      nixosModules.default = ./profiles/desktop.nix;
 
       # ── NIXOS BACKEND ─────────────────────────────────────────────────────────────────────
       # The NixOS half of the platform-backend split (nixarch ships the Arch/CachyOS half, in its
       # own repo — see modules/nixos-backend.nix's header for why this one, unlike that one, lives
       # here). Reads `nixdesktop.want` and resolves it into `environment.systemPackages` via
-      # lib/nixos-roles.nix. Not `.default`: a consumer must opt in explicitly, and `.default`
-      # stays the platform-neutral policy profile above so importing it on a non-NixOS host (via
-      # `systemManagerModules.default`) never drags a NixOS-only module along.
+      # lib/nixos-roles.nix, including any compositor a consumer supplies through the backend's
+      # own `extraCompositors` option (for a compositor with no nixpkgs package, e.g. scroll). Not
+      # `.default`: a consumer must opt in explicitly, and `.default` stays the platform-neutral
+      # policy profile above so importing it on a non-NixOS host (via `systemManagerModules.
+      # default`) never drags a NixOS-only module along.
       nixosModules.backend = ./modules/nixos-backend.nix;
 
       # ── CONFIG GENERATION ─────────────────────────────────────────────────────────────────
       # home-manager modules that write real dotfiles. None of these install packages either:
-      # they assume the named binaries exist, which is the backend's job.
+      # they assume the named binaries exist, which is the backend's job. None of these is a
+      # compositor's own config module any more, either — that job now belongs to sibling repos
+      # like nixniri.
       #
       # `homeManagerModules`, not `homeModules`: home-manager upstream has moved to the shorter
-      # name, but every other project in this family (nixarch, nixsh, nixremote) exports
-      # `homeManagerModules`, and a consumer importing four of them at once should not have to
+      # name, but every other project in this family (nixarch, nixniri, nixsh, nixremote) exports
+      # `homeManagerModules`, and a consumer importing several of them at once should not have to
       # remember which one is spelled differently. Family consistency wins over upstream fashion.
       homeManagerModules = {
-        niri = ./home/niri.nix;
-
-        # Session components as systemd user services rather than niri
-        # `spawn-at-startup` lines. Not a style preference: spawn-at-startup runs
+        # Session components as systemd user services rather than a compositor's own
+        # `spawn-at-startup`-style lines. Not a style preference: that kind of line runs
         # once at session start and cannot fire into a session that is already
         # running, so a `home-manager switch` silently fails to converge the
         # session and needs a re-login. It also has no ordering primitive, which
@@ -73,8 +84,22 @@
         # is an unrelated upstream project and uses the short spelling).
         noctalia = ./home/noctalia.nix;
 
-        # niri is the module this project exists for; everything else decorates it.
-        default = ./home/niri.nix;
+        # The `nixdesktop.startup` contract only — see home/startup.nix's own header. Exported
+        # standalone (not folded into `session` or `noctalia`) so a compositor module such as
+        # nixniri can depend on the contract alone, without pulling in this repo's systemd-service
+        # or noctalia-specific machinery. `session` and `noctalia` both import it themselves too,
+        # so a consumer who already has either need not add this on top.
+        startup = ./home/startup.nix;
+
+        # NO `default` HERE, DELIBERATELY. Before the niri module moved out to nixniri,
+        # `default` pointed at it: "niri is the module this project exists for; everything else
+        # decorates it." That framing no longer holds — home/*.nix is now a set of independent,
+        # separately opt-in components (a bar, a notifier, a session-service layer, a startup
+        # contract), none of which is "the" module a generic consumer wants by default. Picking
+        # one anyway (say, `session`, since it is the most broadly useful glue) would
+        # misrepresent it as the repo's primary artifact for a consumer who only wants, say,
+        # `mako`. Every other module class above still gets its `.default` (the policy profile),
+        # so this omission is scoped to `homeManagerModules` only.
       };
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);

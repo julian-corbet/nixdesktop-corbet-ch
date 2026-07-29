@@ -1,5 +1,6 @@
-# home/mako.nix — declarative mako (notification daemon) config, sibling to home/niri.nix and
-# home/waybar.nix. LEAN BY DESIGN: mechanism only, no default theme/settings -- mako's config
+# home/mako.nix — declarative mako (notification daemon) config, sibling to the other
+# home/*.nix modules in this repo. Compositor-neutral: mako runs the same regardless of which
+# compositor is in use. LEAN BY DESIGN: mechanism only, no default theme/settings -- mako's config
 # format is flat `key=value` lines (or a bare `key` for boolean flags), so `settings` is an
 # attrset where a null value renders as a bare flag and a string value renders as `key=value`.
 { lib, config, ... }:

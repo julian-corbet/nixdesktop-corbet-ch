@@ -1,8 +1,9 @@
 # home/eww.nix — declarative eww (ElKowar's Wacky Widgets) bar config, sibling to home/waybar.nix.
 # LEAN BY DESIGN: eww's config isn't structured data like waybar's JSON, it's a full DSL (yuck for
 # widgets/windows, SCSS for styling) plus arbitrary helper scripts referenced from that DSL --
-# so, like home/niri.nix's `extraTopLevel`/`output` options, this module takes raw text rather
-# than trying to model yuck's grammar in Nix.
+# so, like a compositor module's own raw-text escape hatches (e.g. nixniri's
+# `extraTopLevel`/`output`), this module takes raw text rather than trying to model yuck's
+# grammar in Nix.
 { lib, config, ... }:
 let
   cfg = config.nixdesktop.eww;

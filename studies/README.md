@@ -5,4 +5,4 @@ Unlike [`../experiments/`](../experiments/README.md), everything here is meant t
 
 | File | Finding |
 |---|---|
-| `rendering-cost.md` | GPU scene-graph toolkits cost real, permanent VRAM for work CPU-side toolkits do for free — the constraint every default in `profiles/niri-desktop.nix` follows from. |
+| `rendering-cost.md` | GPU scene-graph toolkits cost real, permanent VRAM for work CPU-side toolkits do for free — the constraint every default in `profiles/desktop.nix` follows from. |

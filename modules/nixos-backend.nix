@@ -17,11 +17,11 @@
 # "nixnixos" sibling too, and there is deliberately no such thing.
 #
 # IMPORT ORDER: this module reads an option that nixdesktop's own profile declares, so both must be
-# in the same evaluation. Import `nixdesktop.nixosModules.niri-desktop` alongside it.
+# in the same evaluation. Import `nixdesktop.nixosModules.desktop` alongside it.
 { lib, config, pkgs, ... }:
 let
   cfg = config.nixdesktop.nixosBackend;
-  roles = import ../lib/nixos-roles.nix { inherit lib pkgs; };
+  roles = import ../lib/nixos-roles.nix { inherit lib pkgs; extraCompositors = cfg.extraCompositors; };
   want = config.nixdesktop.want or { };
   resolved = roles.packagesFor want;
 in
@@ -44,6 +44,20 @@ in
         name, resolved the same way as everything else); use this when it is specific to one host
         or when the package has no sensible top-level nixpkgs attribute name to hand to
         `extraComponents`.
+      '';
+    };
+
+    extraCompositors = lib.mkOption {
+      type = lib.types.attrsOf (lib.types.listOf lib.types.package);
+      default = { };
+      example = lib.literalExpression ''{ scroll = [ nixscroll.packages.''${pkgs.system}.scroll ]; }'';
+      description = ''
+        Additional entries for `lib/nixos-roles.nix`'s `compositors` table, keyed by the same
+        string you set as `nixdesktop.desktop.compositor`. Needed for any compositor with no
+        nixpkgs package — scroll, for instance, has none, so a consumer supplies their own
+        derivation here (e.g. from nixscroll's own `packages` flake output) instead of editing
+        this repo. `"niri"` already resolves out of the box and needs no entry here, though an
+        entry for it here would still take precedence over the built-in one if you supplied one.
       '';
     };
   };
