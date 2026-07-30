@@ -74,6 +74,53 @@
 let
   cfg = config.nixdesktop.session;
 
+  # ── The swayidle invocation, assembled HERE ────────────────────────────────────────────────
+  #
+  # This assembly used to live in each compositor's own config module (nixniri owned
+  # `niri.idle.command`, computed from its own timeout options) and this module took the finished
+  # string. The stated reason was to keep the assembly in exactly one place rather than duplicating
+  # it here -- correct instinct, wrong owner, and the error only became visible with a second
+  # compositor in the family:
+  #
+  #   - swayidle is not compositor-specific in any way. It is a generic wlroots-adjacent idle
+  #     daemon, and the invocation is character-for-character identical whether niri or scroll is
+  #     running. Nothing about the assembly needs to know which compositor it is under.
+  #   - Idle timeouts are POLICY -- "lock after 30 minutes, never suspend" is a statement about the
+  #     host, not about a compositor's config syntax. Policy is this repo's whole remit.
+  #   - So putting the assembly in the compositor modules did not avoid duplication, it GUARANTEED
+  #     it: one copy per compositor repo, N copies for N compositors, each free to drift. Owning it
+  #     once here is what actually makes it one place.
+  #
+  # The old design also compared itself to waybar.nix taking a finished `settings` attrset. That
+  # analogy runs the other way: bar layout genuinely is the user's business and this repo has no
+  # opinion worth imposing on it, whereas a swayidle command line is boilerplate with exactly one
+  # correct shape.
+  #
+  # `command` remains available as a verbatim override, for an idle daemon that is not swayidle at
+  # all (hypridle, or a hand-rolled script). When it is null -- the default -- the invocation below
+  # is used, and when `lockAfterSeconds` is also null there is no idle daemon at all and the service
+  # is not created.
+  lockBin = cfg.idleAndLock.lockCommand;
+
+  assembledIdleCommand =
+    if cfg.idleAndLock.lockAfterSeconds == null
+    then null
+    else
+      "swayidle -w"
+      + " timeout ${toString cfg.idleAndLock.lockAfterSeconds} '${lockBin} -f'"
+      + lib.optionalString (cfg.idleAndLock.suspendAfterSeconds != null)
+        " timeout ${toString cfg.idleAndLock.suspendAfterSeconds} 'systemctl suspend'"
+      + " before-sleep '${lockBin} -f'"
+      + " lock '${lockBin} -f'"
+      # -USR1 tells swaylock to re-show its indicator; the pkill target is the locker's process
+      # name, which is why this uses the bare command rather than a path.
+      + " unlock 'pkill -USR1 ${lockBin}'";
+
+  effectiveIdleCommand =
+    if cfg.idleAndLock.command != null
+    then cfg.idleAndLock.command
+    else assembledIdleCommand;
+
   # systemd's own ExecStart= line grammar is NOT shell quoting (`man 7 systemd.syntax`, section
   # QUOTING, confirmed locally): a whole item can be wrapped in single OR double quotes, and
   # within a quoted span backslash introduces a small fixed set of C-style escapes, one of which
@@ -161,9 +208,13 @@ let
         description = "Clipboard history watcher (image)";
       };
     })
-    // (lib.optionalAttrs cfg.idleAndLock.enable {
+    # `effectiveIdleCommand` is null when there is no idle daemon to run at all (either
+    # `lockAfterSeconds = null`, or an explicit `command = null` with no timeouts). Guarding on it
+    # here rather than asserting keeps "enable the session layer, but this host never idle-locks" a
+    # valid configuration instead of a build failure.
+    // (lib.optionalAttrs (cfg.idleAndLock.enable && effectiveIdleCommand != null) {
       idle = lib.mkDefault {
-        inherit (cfg.idleAndLock) command;
+        command = effectiveIdleCommand;
         runShell = true;
         description = "Idle/lock daemon";
       };
@@ -364,27 +415,57 @@ in
 
     idleAndLock = {
       enable = lib.mkEnableOption "an idle/lock daemon, run as a systemd user service (e.g. swayidle)";
-      command = lib.mkOption {
-        type = lib.types.str;
-        example = ''swayidle -w timeout 300 'swaylock -f' timeout 600 'systemctl suspend' before-sleep 'swaylock -f' lock 'swaylock -f' unlock 'pkill -USR1 swaylock' '';
+
+      lockAfterSeconds = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = 300;
         description = ''
-          Full swayidle invocation, timeouts and lock command already assembled.
+          Seconds of inactivity before the screen locks. `null` means no idle daemon at all: the
+          service is not created, and `lockCommand` is then only reachable through a compositor's
+          own lock keybind.
+        '';
+      };
 
-          DESIGN DECISION: this module takes a finished command rather than owning the assembly
-          (timeouts + lock command -> one swayidle line). A compositor module typically already
-          assembles exactly this string from its own idle-timeout options -- nixniri's niri.nix
-          does, exposing it as the read-only `nixniri.niri.idle.command` (see nixniri's own
-          README for the full cross-repo contract). Reimplementing that assembly here would give
-          the same feature two independently-maintained copies that can silently drift apart.
-          Owning the systemd MECHANISM (this file's actual job) and owning the swayidle-specific
-          ASSEMBLY (the compositor module's job) are different concerns, and the sibling modules
-          already keep those apart elsewhere (e.g. waybar.nix takes a finished `settings`/
-          `modules` attrset rather than knowing anything about bar layout).
+      suspendAfterSeconds = lib.mkOption {
+        type = lib.types.nullOr lib.types.ints.positive;
+        default = 600;
+        description = ''
+          Seconds of inactivity before suspending. `null` drops the suspend action while keeping
+          the idle lock -- the right setting on any host that must not suspend but should still
+          lock, e.g. a desktop in a container sharing its kernel (and therefore its power state)
+          with its host. Ignored entirely when `lockAfterSeconds` is null.
+        '';
+      };
 
-          CONSEQUENCE: nixdesktop does not wire the two together automatically -- now that
-          policy/session and compositor config are separate flakes, not just separate files, the
-          consumer connects them explicitly at their own top-level config, e.g.:
-          `nixdesktop.session.idleAndLock.command = config.nixniri.niri.idle.command;`
+      lockCommand = lib.mkOption {
+        type = lib.types.str;
+        default = "swaylock";
+        description = ''
+          The screen locker. Used both in the assembled idle invocation and, read defensively by
+          the compositor modules, for their own lock keybind -- so it is stated once here rather
+          than once per compositor. Must be a bare command name, not a path: the assembled
+          invocation ends with `pkill -USR1 <this>`, which matches on process name.
+        '';
+      };
+
+      command = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "hypridle";
+        description = ''
+          ESCAPE HATCH ONLY. A verbatim idle-daemon invocation, used as-is and bypassing the
+          assembly from the three options above. `null`, the default, means "assemble a swayidle
+          invocation", which is what almost every consumer wants.
+
+          Set this only for an idle daemon that is not swayidle and therefore does not take
+          swayidle's timeout/action grammar. Setting it makes `lockAfterSeconds` and
+          `suspendAfterSeconds` inert for the daemon (they no longer describe what runs), so
+          prefer the assembled form unless you actually need a different daemon.
+
+          HISTORY: this option used to be the ONLY way in, a required string, on the reasoning that
+          the compositor module should own the assembly. That was the wrong owner -- see this
+          file's `assembledIdleCommand` comment -- and it also meant every consumer hand-wired
+          `command = config.nixniri.niri.idle.command;` or silently got no idle daemon.
         '';
       };
     };

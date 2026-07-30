@@ -102,6 +102,22 @@
         # so this omission is scoped to `homeManagerModules` only.
       };
 
+      # ── CHECKS ────────────────────────────────────────────────────────────────────────────
+      # `nix flake check` does NOT evaluate `homeManagerModules` — it lists them as unchecked and
+      # moves on. Everything under home/ was therefore untested, which mattered little while those
+      # modules only rendered attrsets a consumer supplied, and matters a great deal now that
+      # home/session.nix assembles the swayidle invocation itself (taken over from the compositor
+      # modules, where it had been duplicated per compositor).
+      #
+      # Scoped to that assembly rather than the whole session layer: it is the one place here with
+      # real branching logic and a silent failure mode (a dropped suspend action, or a lockCommand
+      # that reaches three of its four positions, breaks quietly at runtime and only at 3 a.m.).
+      checks = forAllSystems (system: {
+        idle-assembly = import ./checks/idle-assembly.nix {
+          pkgs = nixpkgs.legacyPackages.${system};
+        };
+      });
+
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
     };
 }
