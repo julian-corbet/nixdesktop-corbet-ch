@@ -23,14 +23,16 @@ Judgment calls that are reasoned but not measured. Each closes into a default in
   "proven adequate, not proven optimal"; still not worth churning without a concrete complaint.
 - **The two-evaluation seam is now a two-*repo* seam too.** Policy is evaluated by
   system-manager/NixOS; compositor config generation now lives in a sibling repo entirely
-  (nixniri, nixscroll, ...) rather than just a separate home-manager evaluation. A consumer who
-  wants the idle daemon's timeout assembly wired to the systemd service that runs it states the
-  connection explicitly at their own top-level config — `nixniri.niri.idle.command` into
-  `nixdesktop.session.idleAndLock.command`, documented as a worked example in nixniri's own
-  README. The polkit-agent and keyring commands have no such compositor-side assembly to wire at
-  all (they're just a binary invocation, not a timeout calculation), so those still come from a
-  platform backend's role table (`lib/nixos-roles.nix`'s `polkitAgents`/`keyrings`) rather than
-  from any compositor module.
+  (nixniri, nixscroll, ...) rather than just a separate home-manager evaluation. Nothing about
+  idle/lock has to be wired across that seam any more: this repo owns the timeouts, the locker
+  name and the swayidle assembly (`nixdesktop.session.idleAndLock`), and a compositor module reads
+  `lockCommand` from it defensively for its own lock keybind. That replaced an arrangement where
+  each compositor module assembled the invocation from its own timeout options and the consumer
+  hand-wired the result in — which was one copy of the assembly per compositor repo, and none at
+  all for a compositor whose repo had not written one. The polkit-agent and keyring commands never
+  had a compositor-side assembly to begin with (they are a binary invocation, not a timeout
+  calculation), so those still come from a platform backend's role table
+  (`lib/nixos-roles.nix`'s `polkitAgents`/`keyrings`).
 - **`bar = "eww"` is under-served.** eww ships no bar, only primitives, so selecting it declares
   an intent the profile cannot fulfil alone. Possibly it should not be an enum value at all.
 - **The startup contract (`home/startup.nix`) has exactly one producer and zero confirmed

@@ -166,7 +166,7 @@ in
     idleAndLock = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Idle daemon + screen locker (swayidle/swaylock class), paired with a compositor module's own idle timeouts and lock command (e.g. nixniri's `niri.idle.*`/`niri.lockCommand`).";
+      description = "Idle daemon + screen locker (swayidle/swaylock class). This role installs them; `nixdesktop.session.idleAndLock` sets the timeouts and assembles the invocation, and a compositor module reads `lockCommand` from there for its own lock keybind.";
     };
 
     portals = lib.mkOption {
