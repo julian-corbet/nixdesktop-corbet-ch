@@ -95,8 +95,15 @@ let
 
   failed = lib.attrNames (lib.filterAttrs (_: passed: !passed) results);
 in
+# `pkgs.emptyFile`, not `pkgs.runCommand`: this check decides everything at EVALUATION time and the
+# derivation is a formality, but `nix flake check --all-systems` (which this repo's CI runs, and
+# must) asks for that formality on EVERY declared system. A `runCommand` marker has a
+# system-dependent output path, so the aarch64 one is a real aarch64 build and dies with "platform
+# mismatch" on any x86_64 machine -- a red check about nothing. `emptyFile` is fixed-output: its
+# path comes from the content hash alone and is identical on every system, so Nix substitutes it
+# instead of building it. See checks/support.nix, which does the same for the same reason.
 if failed == [ ]
-then pkgs.runCommand "nixdesktop-idle-assembly-ok" { } "touch $out"
+then pkgs.emptyFile
 else throw ''
   nixdesktop: the idle/lock assembly is wrong. Failing assertions:
   ${lib.concatMapStringsSep "\n" (f: "  - ${f}") failed}
