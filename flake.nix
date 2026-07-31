@@ -23,19 +23,21 @@
   # nixhost IS an input, for EXACTLY ONE THING: `lib.probeFact`/`lib.collectProbes` (its
   # `lib/facts.nix`). modules/session.nix reads two facts nixhost owns —
   # `nixhost.environments.<env>.resources.gpu.<device>.access` (the device CLAIM) and
-  # `nixhost.resources.gpu` (the complete inventory the denied-list complement is computed over).
-  # A bare `config.nixhost.environments or { }` cannot tell "nixhost is not composed on this host"
-  # from "nixhost IS composed but that leaf moved or was renamed", and the second one would empty
-  # the DENIED list silently — which reads exactly like "nothing to deny" while letting a
-  # forbidden card leak into niri's enumeration. probeFact is the family's one shared fix for that
-  # defect class; consuming it beats vendoring a second copy.
+  # `nixhost.resources.gpu` (the complete inventory the denied-list complement is computed over,
+  # and — as of nixgpu's stable-device-paths work — the same mirror modules/launcher.nix reads its
+  # `cardPath`/`renderPath` values from). A bare `config.nixhost.environments or { }` cannot tell
+  # "nixhost is not composed on this host" from "nixhost IS composed but that leaf moved or was
+  # renamed", and the second one would empty the DENIED list silently — which reads exactly like
+  # "nothing to deny" while letting a forbidden card leak into niri's enumeration. probeFact is the
+  # family's one shared fix for that defect class; consuming it beats vendoring a second copy.
   #
   # THIS IS THE MECHANISM ONLY, NOT THE DATA. nixhost's own config is still read defensively, with
   # no `imports` of nixhost anywhere and no requirement that a consumer compose it at all — a host
   # without nixhost evaluates fine and simply permits nothing. `probeFact`/`collectProbes` are
   # closed over as plain function arguments below, never `_module.args`, so a consumer importing
-  # `nixosModules.session` sees an ordinary module function and never needs to know nixhost exists.
-  # Same pattern, same reasoning, as nixlxc's own single nixhost input.
+  # `nixosModules.session` (or `nixosModules.launcher`) sees an ordinary module function and never
+  # needs to know nixhost exists. Same pattern, same reasoning, as nixlxc's own single nixhost
+  # input.
   inputs.nixhost = {
     url = "github:julian-corbet/nixhost-corbet-ch";
     inputs.nixpkgs.follows = "nixpkgs";
@@ -49,6 +51,15 @@
       # the input comment above. The exported value is a plain module function taking the usual
       # `{ lib, config, ... }`; nothing about consuming it changes.
       sessionModule = import ./modules/session.nix {
+        inherit (nixhost.lib) probeFact collectProbes;
+      };
+
+      # Same closure, same reasoning, for modules/launcher.nix: it reads the identical
+      # `nixhost.resources.gpu` mirror session.nix does (for `cardPath`/`renderPath` this time,
+      # rather than device names) through its own `lib.probeFact` call — see that module's own
+      # header for why a second, independent probe call is preferable to threading session.nix's
+      # result through as extra module state.
+      launcherModule = import ./modules/launcher.nix {
         inherit (nixhost.lib) probeFact collectProbes;
       };
     in
@@ -90,11 +101,22 @@
       # NixOS plane only, deliberately, and this is the one asymmetry above. A session is an
       # instance that will grow a real system unit with `PAMName=` + `User=` (the only shape that
       # can ever be seated — a `--user` unit cannot, because seating is cgroup-structural), plus
-      # `DevicePolicy=strict`/`DeviceAllow=` enforcement. None of that has a system-manager
+      # `DevicePolicy=closed`/`DeviceAllow=` enforcement. None of that has a system-manager
       # equivalent, and exporting the option surface onto a plane that can never implement it
       # would be an invitation to declare something that silently does nothing. The Arch hosts get
       # `monitors` and `layouts`, which is exactly the part that is platform-neutral.
       nixosModules.session = sessionModule;
+
+      # ── LAUNCHER ──────────────────────────────────────────────────────────────────────────
+      # Where a session instance above actually turns into a running unit — a system unit with
+      # PAMName for `delivery = "seated"`, a `--user` unit for `delivery = "headless"`. See
+      # modules/launcher.nix's own header for why this had to be its own module (three desktops on
+      # this estate currently have three different, private, hand-written answers to exactly this
+      # problem), and for how it resolves `DeviceAllow=` as a plain, static Nix value from
+      # nixgpu's stable device paths rather than mutating the unit at runtime. NixOS plane only,
+      # for the identical reason `session` above is: none of `systemd.services`, `systemd.user.
+      # services`, or PAM-backed seating has a system-manager equivalent.
+      nixosModules.launcher = launcherModule;
 
       # ── NIXOS BACKEND ─────────────────────────────────────────────────────────────────────
       # The NixOS half of the platform-backend split (nixarch ships the Arch/CachyOS half, in its
@@ -159,9 +181,10 @@
       # home/session.nix, which assembles the swayidle invocation itself with real branching logic.
       #
       # `nixosModules`/`systemManagerModules` are not evaluated by `nix flake check` either — it
-      # only type-checks that they ARE modules. So the three tables below (monitors, layouts,
-      # sessions) would ship completely unproven without these: every one of them is assertions
-      # over derived arithmetic, which is precisely the code that fails quietly.
+      # only type-checks that they ARE modules. So the tables below (monitors, layouts, sessions,
+      # launcher) would ship completely unproven without these: every one of them is assertions
+      # over derived arithmetic, or — for `launcher` — a real rendered systemd unit, which is
+      # precisely the code that fails quietly.
       checks = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
         {
@@ -171,6 +194,12 @@
           # `sessionModule` is passed already closed over nixhost's `probeFact`/`collectProbes`,
           # so the checks exercise the module exactly as a consumer imports it -- decoys included.
           session-devices = import ./checks/session-devices.nix { inherit pkgs sessionModule; };
+          # Composed with the same `sessionModule` and the same already-closed `launcherModule`,
+          # for the same reason: modules/launcher.nix reads `permittedDevices`/`deniedDevices`,
+          # which only exist once session.nix has derived them. `nixpkgs` itself (not just
+          # `pkgs`) is threaded through too: this check's real-`lib.nixosSystem` proof (see that
+          # file's own header) needs `nixpkgs.lib.nixosSystem`, not only `legacyPackages.${system}`.
+          launcher = import ./checks/launcher.nix { inherit pkgs sessionModule launcherModule nixpkgs system; };
         });
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);
