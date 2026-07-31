@@ -43,7 +43,23 @@
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, nixhost }:
+  # system-manager IS an input, for exactly one thing too: `lib.makeSystemConfig`, so
+  # checks/launcher.nix can build a REAL system-manager configuration and inspect the literal unit
+  # text it renders — the same discipline checks/launcher.nix already applies to the NixOS plane
+  # via `nixpkgs.lib.nixosSystem`, and the exact pattern nixram (a sibling repo with the identical
+  # dual-plane shape) already uses for its own `checks/system-manager-eval-tests.nix`. Nothing
+  # about the MODULES this repo ships (modules/session.nix, modules/launcher.nix) depends on this
+  # input — `systemManagerModules.session`/`.launcher` are ordinary module values a consumer's own
+  # `system-manager.lib.makeSystemConfig` call composes; this input exists purely so THIS repo's
+  # own `nix flake check` can prove those values actually work against the real thing, not a stub
+  # that "accepts anything" (see checks/launcher.nix's header for why a stub alone was previously
+  # not enough).
+  inputs.system-manager = {
+    url = "github:numtide/system-manager";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
+  outputs = { self, nixpkgs, nixhost, system-manager }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ];
 
@@ -59,9 +75,23 @@
       # rather than device names) through its own `lib.probeFact` call — see that module's own
       # header for why a second, independent probe call is preferable to threading session.nix's
       # result through as extra module state.
-      launcherModule = import ./modules/launcher.nix {
-        inherit (nixhost.lib) probeFact collectProbes;
-      };
+      #
+      # `launcherModuleFor plane`, NOT a single `launcherModule` value, because modules/launcher.nix
+      # itself is now curried on `plane` ("nixos" | "system-manager") — see that file's own header
+      # for the full reasoning (system-manager renders `systemd.services`/`PAMName=`/`DeviceAllow=`
+      # identically to NixOS, proven live by `infra/hosts/archlxc/niri-session.nix`'s own
+      # `niri-seat.service`, but has no `systemd.user.services` anywhere in its module tree — so the
+      # one real divergence, `delivery = "headless"`, has to be selected before either module value
+      # is handed to a consumer, never decided by a `config`-derived condition inside one shared
+      # value). `plane` is closed over here, at the exact same point `probeFact`/`collectProbes`
+      # already are, for the identical reason: a consumer importing `nixosModules.launcher` or
+      # `systemManagerModules.launcher` sees an ordinary module function and never needs to know
+      # this file exists, let alone that it is one file wearing two plane-specific hats.
+      launcherModuleFor = plane: import ./modules/launcher.nix
+        { inherit (nixhost.lib) probeFact collectProbes; }
+        plane;
+      launcherModuleNixos = launcherModuleFor "nixos";
+      launcherModuleSystemManager = launcherModuleFor "system-manager";
     in
     {
       # ── POLICY ────────────────────────────────────────────────────────────────────────────
@@ -98,25 +128,48 @@
       systemManagerModules.layouts = ./modules/layouts.nix;
 
       # ── SESSIONS ──────────────────────────────────────────────────────────────────────────
-      # NixOS plane only, deliberately, and this is the one asymmetry above. A session is an
-      # instance that will grow a real system unit with `PAMName=` + `User=` (the only shape that
-      # can ever be seated — a `--user` unit cannot, because seating is cgroup-structural), plus
-      # `DevicePolicy=closed`/`DeviceAllow=` enforcement. None of that has a system-manager
-      # equivalent, and exporting the option surface onto a plane that can never implement it
-      # would be an invitation to declare something that silently does nothing. The Arch hosts get
-      # `monitors` and `layouts`, which is exactly the part that is platform-neutral.
+      # A session instance: this user, this compositor, delivered this way, on this seat, with
+      # this device claim and this output layout. Every option here is DATA — a string, an enum, a
+      # derived NAME list (`permittedDevices`/`deniedDevices`) — and every assertion is arithmetic
+      # over that data (contested seats, an unresolvable environment, a headless session that
+      # isn't pixman). None of it touches `pkgs`, `systemd`, or `users` at all, which is exactly
+      # the same shape `monitors`/`layouts` above already have, and exactly why this is offered on
+      # BOTH planes too: the Arch boxes (archlxc, the elitebook) declare sessions with precisely
+      # the same `delivery`/`seat`/`environment` vocabulary as a NixOS host, and a registry that
+      # only existed on one plane would force the other to re-type it.
+      #
+      # A PRIOR REVISION of this comment claimed sessions would "grow a system unit with PAMName=
+      # / User= ... none of which system-manager can implement", and kept this NixOS-only on that
+      # basis. That claim was about modules/launcher.nix's job (turning an instance into a running
+      # unit), never about this module's own option surface, which was never anything but data —
+      # and it was wrong about launcher.nix too: see that file's own header for the corrected,
+      # source-read account of what system-manager actually supports. `nixdesktop.launcher` is
+      # what actually starts a session and is what has the one real (headless-only) plane split;
+      # `nixdesktop.sessions` itself needed no change at all.
       nixosModules.session = sessionModule;
+      systemManagerModules.session = sessionModule;
 
       # ── LAUNCHER ──────────────────────────────────────────────────────────────────────────
       # Where a session instance above actually turns into a running unit — a system unit with
       # PAMName for `delivery = "seated"`, a `--user` unit for `delivery = "headless"`. See
       # modules/launcher.nix's own header for why this had to be its own module (three desktops on
       # this estate currently have three different, private, hand-written answers to exactly this
-      # problem), and for how it resolves `DeviceAllow=` as a plain, static Nix value from
-      # nixgpu's stable device paths rather than mutating the unit at runtime. NixOS plane only,
-      # for the identical reason `session` above is: none of `systemd.services`, `systemd.user.
-      # services`, or PAM-backed seating has a system-manager equivalent.
-      nixosModules.launcher = launcherModule;
+      # problem), for how it resolves `DeviceAllow=` as a plain, static Nix value from nixgpu's
+      # stable device paths rather than mutating the unit at runtime, and for the two-plane split
+      # below.
+      #
+      # BOTH PLANES, because the seated case (a SYSTEM unit — `systemd.services`, `PAMName=`,
+      # `User=`, `DevicePolicy=`/`DeviceAllow=`) renders through the identical nixpkgs unit code on
+      # system-manager as on NixOS — confirmed by reading numtide/system-manager's own
+      # `nix/modules/systemd.nix`, not assumed, and proven live for months by
+      # `infra/hosts/archlxc/niri-session.nix`'s own hand-written `niri-seat.service` on exactly
+      # that plane. Only `delivery = "headless"` (a `--user` unit) has no system-manager
+      # equivalent — its module tree has no `systemd.user.services`, or any per-user-manager unit
+      # surface, anywhere — and modules/launcher.nix degrades that case to a named, loud build
+      # failure on the system-manager plane rather than silently dropping the session. See that
+      # file's own header and its `headlessUnsupportedAssertions` for the full account.
+      nixosModules.launcher = launcherModuleNixos;
+      systemManagerModules.launcher = launcherModuleSystemManager;
 
       # ── NIXOS BACKEND ─────────────────────────────────────────────────────────────────────
       # The NixOS half of the platform-backend split (nixarch ships the Arch/CachyOS half, in its
@@ -194,12 +247,19 @@
           # `sessionModule` is passed already closed over nixhost's `probeFact`/`collectProbes`,
           # so the checks exercise the module exactly as a consumer imports it -- decoys included.
           session-devices = import ./checks/session-devices.nix { inherit pkgs sessionModule; };
-          # Composed with the same `sessionModule` and the same already-closed `launcherModule`,
-          # for the same reason: modules/launcher.nix reads `permittedDevices`/`deniedDevices`,
-          # which only exist once session.nix has derived them. `nixpkgs` itself (not just
-          # `pkgs`) is threaded through too: this check's real-`lib.nixosSystem` proof (see that
-          # file's own header) needs `nixpkgs.lib.nixosSystem`, not only `legacyPackages.${system}`.
-          launcher = import ./checks/launcher.nix { inherit pkgs sessionModule launcherModule nixpkgs system; };
+          # Composed with the same `sessionModule` and both already-closed, plane-specific
+          # `launcherModule*` values, for the same reason: modules/launcher.nix reads
+          # `permittedDevices`/`deniedDevices`, which only exist once session.nix has derived them.
+          # `nixpkgs` itself (not just `pkgs`) is threaded through too: this check's real-
+          # `lib.nixosSystem` proof (see that file's own header) needs `nixpkgs.lib.nixosSystem`,
+          # not only `legacyPackages.${system}` -- and `system-manager.lib` is threaded through for
+          # the mirror-image real-`makeSystemConfig` proof on the system-manager plane.
+          launcher = import ./checks/launcher.nix {
+            inherit pkgs sessionModule nixpkgs system;
+            launcherModuleNixos = launcherModuleNixos;
+            launcherModuleSystemManager = launcherModuleSystemManager;
+            systemManagerLib = system-manager.lib;
+          };
         });
 
       formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixpkgs-fmt);

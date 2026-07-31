@@ -5,20 +5,23 @@
 # whole module exists to remove (see modules/launcher.nix's header — the elitebook's live, silent
 # polkit failure is what a `--user` "seated" session actually looks like).
 #
-# TWO LAYERS, DELIBERATELY, NOT ONE. The lightweight `lib.evalModules` layer below (mirroring
-# checks/session-devices.nix's own approach) is fast and proves the WIRING: seated vs headless
-# shape, the assertions, the device-path arithmetic. But an EARLIER version of this file stubbed
-# `systemd.*`/`users.*` as bare `attrsOf anything` — which happily accepted `DevicePolicy = "strict"`
-# with an empty starting `DeviceAllow=`, a bare non-absolute `ExecStart`, and a `users.users.<name>
-# = { linger = true; }` write, reporting 21/21 green against a module that could not actually start
-# a session (measured live on corbet-server: `status=208/STDIN`). A stub that accepts anything
-# proves nothing about whether systemd itself would accept it. So the SECOND layer below builds a
-# REAL `nixpkgs.lib.nixosSystem` — the actual upstream `systemd`/`users-groups.nix` modules, not a
-# stand-in — and reads the literal rendered unit TEXT nixpkgs' own `systemd-lib.nix` would write to
-# disk, off `config.systemd.units."<name>.service".text` (a plain Nix string, computed purely by
-# evaluation — no derivation is ever built to get it, so this stays as cheap as any other check
-# here despite using the real module tree).
-{ pkgs, sessionModule, launcherModule, nixpkgs, system, lib ? pkgs.lib }:
+# FOUR LAYERS, DELIBERATELY, NOT ONE OR TWO. modules/launcher.nix is now curried on `plane`
+# ("nixos" | "system-manager" — see its own header for the full account of what system-manager
+# genuinely does and does not support, read from its actual module tree rather than assumed), and
+# each plane gets both a lightweight `lib.evalModules` layer (fast, proves the WIRING) and a real
+# build layer (`nixpkgs.lib.nixosSystem` / `system-manager.lib.makeSystemConfig`, the actual
+# upstream module trees, proving the literal RENDERED UNIT TEXT). An EARLIER version of this file
+# stubbed `systemd.*`/`users.*` as bare `attrsOf anything` — which happily accepted `DevicePolicy =
+# "strict"` with an empty starting `DeviceAllow=`, a bare non-absolute `ExecStart`, and a
+# `users.users.<name> = { linger = true; }` write, reporting 21/21 green against a module that
+# could not actually start a session (measured live on corbet-server: `status=208/STDIN`). A stub
+# that accepts anything proves nothing about whether systemd itself would accept it — and, for the
+# system-manager plane specifically, a stub that DOES declare `systemd.user.services` (when the
+# real system-manager module tree never does) would prove nothing about the one genuine capability
+# gap this pass exists to degrade explicitly. So layers three and four below use a stub, and a real
+# module tree, that both faithfully omit `systemd.user.services` — see `systemHostStubSystemManager`
+# and the real-`makeSystemConfig` fixtures for how that absence is itself part of the proof.
+{ pkgs, sessionModule, launcherModuleNixos, launcherModuleSystemManager, nixpkgs, system, systemManagerLib, lib ? pkgs.lib }:
 let
   support = import ./support.nix { inherit pkgs lib; };
   inherit (support) firedMessages matching countMatching report;
@@ -66,8 +69,34 @@ let
     };
   };
 
+  # The system-manager-plane equivalent stub, for the LIGHTWEIGHT layer only -- and the whole
+  # point is what it does NOT declare. system-manager's own module tree (`nix/modules/systemd.nix`,
+  # confirmed by reading it at the pinned rev, not assumed) declares `systemd.services`/`sockets`/
+  # `timers`/`paths`/`targets`/`mounts`/`automounts`/`slices` on the SYSTEM instance only --
+  # `systemd.tmpfiles.rules` is real (`nix/modules/tmpfiles.nix`), `users.users` is real (vendored
+  # from nixpkgs, `nix/modules/upstream/nixpkgs/users-groups.nix`) -- but there is no
+  # `systemd.user.services` ANYWHERE in that tree. Composing modules/launcher.nix's
+  # system-manager-plane value against a stub that faithfully omits it is itself part of the proof:
+  # if this module ever again wrote to that path unconditionally (the exact bug class this pass
+  # fixes), even a SEATED-ONLY config -- zero headless sessions at all -- would throw "The option
+  # `systemd.user.services' does not exist" the moment `config` is forced, because the module
+  # system requires every written config path to match a declared option regardless of whether any
+  # session actually needed it. See `seatedOnlyCfgSm`'s own result below for that exact proof.
+  systemHostStubSystemManager = { ... }: {
+    options = {
+      systemd.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
+      systemd.tmpfiles.rules = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+      users.users = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
+      # DELIBERATELY NO `systemd.user.services` HERE -- see the comment above.
+    };
+  };
+
   evalWith = modules: (lib.evalModules {
-    modules = [ support.hostStub systemHostStub nixhostStub sessionModule launcherModule ] ++ modules;
+    modules = [ support.hostStub systemHostStub nixhostStub sessionModule launcherModuleNixos ] ++ modules;
+  }).config;
+
+  evalWithSystemManager = modules: (lib.evalModules {
+    modules = [ support.hostStub systemHostStubSystemManager nixhostStub sessionModule launcherModuleSystemManager ] ++ modules;
   }).config;
 
   # Two devices, matching nixgpu's own worked examples (see the review instructions this pass
@@ -250,6 +279,151 @@ let
       countMatching "shaped like a raw" (firedMessages seatedCfg) == 0;
   };
 
+  # ── LAYER THREE: system-manager, LIGHTWEIGHT `evalModules` ────────────────────────────────────
+  #
+  # Mirrors the lightweight NixOS layer above, but wired to `launcherModuleSystemManager` and the
+  # `systemHostStubSystemManager` fixture that faithfully omits `systemd.user.services` -- see that
+  # stub's own comment for why its absence is itself part of the proof.
+  seatedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { }; } ]);
+  headlessUnsupportedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.remote = headless { }; } ]);
+
+  deskUnitSm = seatedCfgSm.systemd.services."nixdesktop-desk";
+
+  # The core structural proof: a SEATED-ONLY config (zero headless sessions anywhere in the
+  # session table) forced all the way down (`deepSeq`) against a host stub that never declared
+  # `systemd.user.services` at all. If modules/launcher.nix ever again wrote to that path
+  # unconditionally -- the exact bug class this pass fixes -- this would throw "The option
+  # `systemd.user.services' does not exist" regardless of there being no headless session to
+  # trigger it, because the module system checks declared-vs-defined paths, not "was this path
+  # ever going to be non-empty". A clean `deepSeq` here is therefore not a weak "nothing crashed"
+  # check -- it is the one fixture that can catch a regression the headless-specific checks below
+  # structurally cannot (they all compose a headless session, which fails for an UNRELATED, correct
+  # reason -- the assertion -- long before the `systemd.user.services` key would ever matter).
+  seatedOnlySmForcesCleanly = (builtins.tryEval (builtins.deepSeq seatedCfgSm true)).success;
+
+  lightweightSystemManagerResults = {
+    "SM: a seated session on the system-manager plane is a system unit with PAMName=login and User= set" =
+      deskUnitSm.serviceConfig.PAMName == "login"
+      && deskUnitSm.serviceConfig.User == "richc";
+
+    "SM: DeviceAllow/DevicePolicy/ExecStart render identically to the NixOS plane for the same fixture" =
+      deskUnitSm.serviceConfig.DevicePolicy == "closed"
+      && lib.elem "/dev/dri/by-path/pci-0000:03:00.0-card rw" deskUnitSm.serviceConfig.DeviceAllow
+      && !(lib.any (e: lib.hasInfix "0000:0a:00.0" e) deskUnitSm.serviceConfig.DeviceAllow)
+      && lib.hasPrefix "/" deskUnitSm.serviceConfig.ExecStart;
+
+    "SM: a seated-only config (no headless sessions at all) forces cleanly against a stub with NO systemd.user.services declared" =
+      seatedOnlySmForcesCleanly;
+
+    "SM: a seated-only config declares no linger marker at all" =
+      seatedCfgSm.systemd.tmpfiles.rules == [ ];
+
+    # ── THE ONE GENUINE PLANE DIVERGENCE: HEADLESS FAILS LOUDLY, NEVER SILENTLY ─────────────────
+    "SM: a headless session on the system-manager plane is a build failure, named explicitly" =
+      countMatching "system-manager plane of" (firedMessages headlessUnsupportedCfgSm) == 1;
+
+    "SM: the headless-unsupported message names the offending session" =
+      let m = lib.head (matching "system-manager plane of" (firedMessages headlessUnsupportedCfgSm)); in
+      lib.hasInfix "nixdesktop.sessions.remote" m;
+
+    "SM: the same headless session composed on the NixOS plane trips no such rejection" =
+      countMatching "system-manager plane of" (firedMessages headlessCfg) == 0;
+
+    "SM: a seated session (the estate's real fixture) trips no headless-unsupported rejection" =
+      countMatching "system-manager plane of" (firedMessages seatedCfgSm) == 0;
+  };
+
+  # ── LAYER FOUR: system-manager, A REAL `system-manager.lib.makeSystemConfig` ──────────────────
+  #
+  # Mirror image of the NixOS `realSystem` proof below, using the ACTUAL upstream system-manager
+  # module tree (`numtide/system-manager`, pinned in flake.nix) rather than a stand-in -- the same
+  # discipline nixram's own `checks/system-manager-eval-tests.nix` already applies for its sibling
+  # dual-plane module. `makeSystemConfig` gates its ENTIRE return value on its own internal
+  # assertion check (`returnIfNoAssertions`, in `nix/lib.nix`): unlike NixOS's `eval-config.nix`,
+  # `.config` itself is unreachable when any assertion fails -- the whole call throws first. So the
+  # headless-on-this-plane proof below is checked via `builtins.tryEval` confirming the throw
+  # happens, exactly like nixram's own `evalFails` helper, not by inspecting an `assertions` list
+  # post-hoc the way the lightweight layer above does.
+  realSystemManagerFor = extraConfig: systemManagerLib.makeSystemConfig {
+    modules = [
+      nixhostStub
+      sessionModule
+      launcherModuleSystemManager
+      {
+        nixhost = { resources.gpu = estateInventory; environments.devhome.resources.gpu = devhomeClaim; };
+        nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll";
+        nixpkgs.hostPlatform = system;
+      }
+      extraConfig
+    ];
+  };
+
+  realSystemManagerSeated = realSystemManagerFor { nixdesktop.sessions.desk = seated { }; };
+
+  # `deepSeq` here is CORRECT for the negative (fails-outright) proof, and would be WRONG for a
+  # positive one -- the two are not symmetric. `makeSystemConfig` returns `returnIfNoAssertions
+  # toplevel` (`nix/lib.nix`): `if failedAssertions != [] then throw ... else lib.showWarnings
+  # config.warnings drv`. Forcing that expression to WHNF is already enough to pick a branch --
+  # and picking the `throw` branch (an assertion genuinely failed) IS the exception, full stop, no
+  # further forcing required. So `builtins.seq` (shallow -- WHNF only) on the raw
+  # `makeSystemConfig {...}` return value itself, NEVER `.config`, and NEVER `builtins.deepSeq`, is
+  # both sufficient and safer than what this helper first tried: an earlier revision called
+  # `builtins.deepSeq (...).config true`, which -- on the SUCCESS branch specifically, i.e. when
+  # proving a fixture that should NOT fail actually doesn't -- walks the ENTIRE real `config`
+  # attrset, including `meta.maintainers`. That NixOS-vendored module (`nixos/modules/misc/meta.
+  # nix`, pulled in unconditionally by system-manager's own `upstream/nixpkgs/default.nix`) keys an
+  # attrset by each definition's `_file` location (`modules/generic/meta-maintainers.nix`), and
+  # under a flake-sourced nixpkgs every `_file` is a `/nix/store/...` path -- Nix's `listToAttrs`
+  # refuses a bare string that "looks like" an uncontexted store-path reference used as an
+  # attribute name. That is an unrelated, pre-existing incompatibility between system-manager's
+  # real module tree and flake-sourced nixpkgs (confirmed live: the identical `deepSeq`-a-
+  # clean-config pattern also fires it against nixram's own sibling `checks/
+  # system-manager-eval-tests.nix`, so this is not something this pass introduced), nothing to do
+  # with `nixdesktop.sessions`/`nixdesktop.launcher` at all -- but `deepSeq` walked into it anyway,
+  # and WORSE, that specific Nix error class is NOT reliably caught by `builtins.tryEval` (measured
+  # live: reintroducing the headless-unsupported-assertion bug this check exists to catch made the
+  # WHOLE `nix flake check` invocation crash uncatchably instead of reporting a clean, named
+  # failure, once the deleted assertion stopped gating `.config` shut). Forcing only WHNF of the
+  # gated return value sidesteps the entire class: it never reaches `meta.maintainers` (or any
+  # other option this repo does not touch) on EITHER branch, so a regression here reports as a
+  # normal, named, readable check failure exactly like every other assertion in this file, rather
+  # than an opaque internal Nix error.
+  realSystemManagerFails = extraConfig:
+    !(builtins.tryEval (builtins.seq (realSystemManagerFor extraConfig) true)).success;
+
+  deskUnitTextSm = realSystemManagerSeated.config.systemd.units."nixdesktop-desk.service".text;
+
+  realSystemManagerResults = {
+    "REAL SYSTEM-MANAGER: the seated unit is a systemd.services unit with PAMName=login and User=richc" =
+      lib.hasInfix "PAMName=login\n" deskUnitTextSm
+      && lib.hasInfix "User=richc\n" deskUnitTextSm;
+
+    "REAL SYSTEM-MANAGER: the rendered seated unit's ExecStart is absolute" =
+      lib.hasInfix "ExecStart=/nix/store/fake-scroll-path/bin/scroll\n" deskUnitTextSm;
+
+    "REAL SYSTEM-MANAGER: the rendered seated unit sets DevicePolicy=closed, never strict" =
+      lib.hasInfix "DevicePolicy=closed\n" deskUnitTextSm
+      && !(lib.hasInfix "DevicePolicy=strict" deskUnitTextSm);
+
+    "REAL SYSTEM-MANAGER: DeviceAllow includes the permitted device's card node" =
+      lib.hasInfix "DeviceAllow=/dev/dri/by-path/pci-0000:03:00.0-card rw\n" deskUnitTextSm;
+
+    "REAL SYSTEM-MANAGER: DeviceAllow never names the denied device's node anywhere" =
+      !(lib.hasInfix "0000:0a:00.0" deskUnitTextSm);
+
+    "REAL SYSTEM-MANAGER: no ExecStartPre line at all" =
+      !(lib.hasInfix "ExecStartPre=" deskUnitTextSm);
+
+    "REAL SYSTEM-MANAGER: no literal card or render-node number anywhere in the rendered unit" =
+      !(containsLiteralCardNumber deskUnitTextSm);
+
+    "REAL SYSTEM-MANAGER: a headless session on this plane fails the WHOLE BUILD outright (makeSystemConfig throws)" =
+      realSystemManagerFails { nixdesktop.sessions.remote = headless { }; };
+
+    "REAL SYSTEM-MANAGER: the identical seated fixture that passes above does NOT fail the build" =
+      !(realSystemManagerFails { nixdesktop.sessions.desk = seated { }; });
+  };
+
   # ── LAYER TWO: A REAL `lib.nixosSystem`, THE ACTUAL systemd/users MODULES ─────────────────────
   #
   # `support.hostStub` is NOT composed here: real NixOS already declares `options.assertions`/
@@ -270,7 +444,7 @@ let
     modules = [
       nixhostStub
       sessionModule
-      launcherModule
+      launcherModuleNixos
       {
         nixhost = { resources.gpu = estateInventory; environments.devhome.resources.gpu = devhomeClaim; };
         nixdesktop.sessions.desk = seated { };
@@ -336,4 +510,4 @@ let
       && !(realSystem.config.users.users ? richc);
   };
 in
-report "launcher" (lightweightResults // realNixosSystemResults)
+report "launcher" (lightweightResults // realNixosSystemResults // lightweightSystemManagerResults // realSystemManagerResults)

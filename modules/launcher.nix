@@ -56,8 +56,49 @@
 # `nixhost.resources.gpu` below for how those two fields reach this module (through the SAME
 # `lib.probeFact` mirror modules/session.nix already reads for the device NAMES, never a new flake
 # input on nixgpu — this repo still takes no compositor, and no GPU domain, as an input).
+#
+# ── TWO PLANES, ONE FILE: WHAT system-manager ACTUALLY SUPPORTS (READ FROM SOURCE, NOT ASSUMED) ─
+#
+# An earlier revision of this repo's flake.nix claimed a session "will grow a system unit with
+# `PAMName=`/`User=` ... none of which system-manager can implement" and kept both `session` and
+# `launcher` NixOS-only on that basis. That claim was FALSE, and there is a live counter-example on
+# this estate: `infra/hosts/archlxc/niri-session.nix`, composed into `systemConfigs.archlxc` — a
+# system-manager target, not NixOS — declares `systemd.services.niri-seat` with `PAMName = "login"`,
+# `User = "richc"`, a real `Environment` list and `Restart`, and has been running for months.
+# system-manager manages real systemd units; a unit property like `PAMName=` is just text in a unit
+# file, and system-manager's `systemd.services` renders through the IDENTICAL nixpkgs
+# `systemdUtils.lib.serviceToUnit` code NixOS itself calls (confirmed by reading
+# `nix/modules/systemd.nix` at the pinned rev, numtide/system-manager@48d47346 — it takes `utils`
+# from `${nixos}/lib/utils.nix`, the real nixpkgs systemd-unit renderer, not a reimplementation).
+# `users.users`/`users.groups` are ALSO real there (vendored verbatim from nixpkgs'
+# `nixos/modules/config/users-groups.nix`, activated through `userborn` instead of NixOS's own
+# activation scripts — see `nix/modules/upstream/nixpkgs/{users-groups,userborn}.nix`), so `homeOf`
+# below reads `config.users.users` identically on both planes.
+#
+# What genuinely does NOT exist anywhere in that module tree (`nix/modules/{default,systemd,
+# environment,tmpfiles,etc}.nix` plus everything `upstream/nixpkgs/default.nix` imports): a
+# `systemd.user.services` option, or any per-user-manager (`user@<uid>.service`) unit surface at
+# all. system-manager activates exactly one systemd instance — the SYSTEM one — and never touches
+# a user manager's own units. That is the one real, structural gap between the two planes, and it
+# lands exactly on the `delivery = "headless"` case (a `--user` unit, scoped by
+# `unitConfig.ConditionUser`) — never on `delivery = "seated"`, which was always a SYSTEM unit to
+# begin with. See `headlessUnsupportedAssertions` near the bottom of this file for how that gap is
+# degraded explicitly rather than silently dropped, and this module's own `config` block for why
+# the omission has to be structural (plain Nix, decided by `plane` before the module system ever
+# sees a `config` attrset) rather than an `lib.mkIf false` guarding a still-written definition.
 { probeFact, collectProbes }:
+# `plane`: "nixos" or "system-manager", closed over BEFORE the module system ever sees the
+# result — same discipline as `probeFact`/`collectProbes` above, and the reason flake.nix builds
+# two module values from this one file (`launcherModuleFor "nixos"` / `launcherModuleFor
+# "system-manager"`) instead of branching on some `config`-derived condition. Which plane a host
+# is on is a fact about which flake output was imported, decided long before evaluation reaches
+# this module's own options — never something a session or a host config could toggle at
+# runtime, so a plain Nix argument is the honest shape, not a `nixdesktop.launcher.plane` option.
+plane:
 { lib, config, ... }:
+if !(lib.elem plane [ "nixos" "system-manager" ]) then
+  throw "modules/launcher.nix: plane must be \"nixos\" or \"system-manager\", got ${builtins.toJSON plane}"
+else
 let
   inherit (lib) types mkOption;
 
@@ -73,6 +114,10 @@ let
   # all, and `/home/<name>` is the only fact available about it in that case. Never a hard failure
   # either way -- both are legitimate, and asserting NixOS-managed-ness here would make this module
   # unusable on exactly the identity path the design doc says this estate is moving toward.
+  #
+  # IDENTICAL ON BOTH PLANES: `users.users` is a real, vendored-from-nixpkgs option under
+  # system-manager too (see this file's header) -- this read never needs to know which plane it
+  # is on, because it is not the module that renders `users.users` in the first place.
   homeOf = user: if config.users.users ? ${user} then config.users.users.${user}.home else "/home/${user}";
 
   # ── THE SAME nixhost MIRROR modules/session.nix ALREADY READS, read a second time here ────────
@@ -160,7 +205,9 @@ let
   # is the tty/input floor every interactive session needs regardless of which card it may or may
   # not master. UNVERIFIED LIVE AS A RUNNING SEATED SESSION YET (this pass edits the tree only, per
   # its own instructions) -- confirm on the first real rollout with `systemctl show <unit> -p
-  # DeviceAllow -p DevicePolicy` while the session is up.
+  # DeviceAllow -p DevicePolicy` while the session is up. SHARED VERBATIM ACROSS BOTH PLANES:
+  # `DevicePolicy=`/`DeviceAllow=` are the same `serviceConfig` fields either way (see this file's
+  # header), so this floor is exactly as correct on a system-manager seated unit as a NixOS one.
   staticGraphicalDeviceAllow = [
     "/dev/ptmx rw"
     "/dev/tty rw"
@@ -281,7 +328,8 @@ let
         # never `systemd.user.services`) is the only shape `sd_pid_get_session()` can ever resolve
         # to a seat -- see this file's header. `PAMName = "login"` is what makes systemd open a
         # real PAM login session and migrate this unit's main process into its own
-        # `session-<N>.scope`, exactly as gdm/sddm/greetd do for their own children.
+        # `session-<N>.scope`, exactly as gdm/sddm/greetd do for their own children. IDENTICAL on
+        # both planes -- see this file's header for the confirmed system-manager module surface.
         User = session.user;
         PAMName = "login";
         WorkingDirectory = home;
@@ -321,6 +369,13 @@ let
   # case -- see modules/session.nix's own header. Nothing in wlroots' headless BACKEND touches
   # libseat at all (`attempt_headless_backend()` never calls `session_create_and_wait()`), so there
   # is no seat to acquire and PAMName would be solving a problem this delivery class does not have.
+  #
+  # NIXOS PLANE ONLY -- see `headlessUnsupportedAssertions` and this file's own header. This
+  # function itself is still shared code, kept here rather than duplicated into a separate file:
+  # it is only ever REFERENCED from `config` below when `plane == "nixos"`, so on the
+  # system-manager plane it exists as dead, unforced Nix code (defining a function costs nothing
+  # unless called) -- the actual capability boundary is enforced in `config`, not by hiding this
+  # definition.
   mkHeadlessUnit = name: session:
     let
       entry = compositorEntry session.compositor;
@@ -380,7 +435,9 @@ let
   # otherwise `user@<uid>.service` (and therefore this unit) never starts until that user actually
   # logs in somewhere, which defeats the entire point of a session nobody is sitting at. `lib.
   # unique` because two headless sessions may legitimately share one user (e.g. two different
-  # compositors for the same person).
+  # compositors for the same person). PLANE-AGNOSTIC: on system-manager this list is only ever
+  # non-empty when `headlessUnsupportedAssertions` has already failed the build (see below), so
+  # computing it unconditionally here is harmless -- it never reaches a real tmpfiles rule.
   lingerUsers = lib.unique (lib.mapAttrsToList (_: s: s.user) headlessSessions);
 
   # Regex forms of the three shapes design doc §8 (assertion 10) singles out as structurally
@@ -398,6 +455,37 @@ let
   rawDeviceNameOffenders = lib.concatLists (lib.mapAttrsToList
     (name: s: map (d: { inherit name d; }) (lib.filter looksLikeRawDevicePath (s.permittedDevices ++ s.deniedDevices)))
     enabledSessions);
+
+  # ── HEADLESS ON system-manager: THE ONE GENUINE GAP, DEGRADED EXPLICITLY, NEVER SILENT ─────────
+  #
+  # See this file's header for the full source-reading behind this: system-manager activates only
+  # the SYSTEM systemd instance and has no `systemd.user.services` (or any `systemd.user`
+  # namespace) anywhere in its module tree. A headless session is therefore UNREPRESENTABLE on
+  # that plane, not merely inconvenient -- there is no option path this module could write it to.
+  # This assertion is what turns naming one anyway into a build failure that says exactly why,
+  # rather than a session that is silently never started (and, worse, never even mentioned).
+  #
+  # Only ever consulted when `plane == "system-manager"` (see `config` below) -- computing the
+  # list itself is harmless on the NixOS plane too, but folding it into `assertions` there would
+  # be actively wrong (a NixOS host legitimately runs headless sessions).
+  headlessUnsupportedAssertions = lib.mapAttrsToList
+    (name: _: {
+      assertion = false;
+      message = ''
+        nixdesktop.sessions.${name} has delivery = "headless", which the system-manager plane of
+        nixdesktop.launcher cannot start. system-manager (confirmed by reading its own module
+        tree at the pinned rev, not assumed -- see this file's header) manages only the SYSTEM
+        systemd instance: there is no `systemd.user.services`, no `systemd.user` namespace, and
+        no per-user-manager unit surface anywhere in it. A headless session needs exactly that
+        surface (a `--user` unit, scoped by `unitConfig.ConditionUser`); a seated session does
+        not -- it is a SYSTEM unit with `PAMName=`/`User=`, which system-manager renders
+        identically to the NixOS plane (see `infra/hosts/archlxc/niri-session.nix`'s own
+        `niri-seat.service` for the live proof, months of uptime on this exact mechanism).
+        Run this session on a NixOS host via `nixosModules.launcher` instead, or remove it from a
+        system-manager host's `nixdesktop.sessions`.
+      '';
+    })
+    headlessSessions;
 in
 {
   options.nixdesktop.launcher = {
@@ -492,6 +580,9 @@ in
         package = pkgs.scroll;`, say, leaving `command`/`env` untouched) resolves correctly
         against that entry's built-in row — see `compositorEntry`'s own comment, in this module's
         source, for exactly how, and for why that is NOT expressed as this option's own `default`.
+
+        SAME OPTION, SAME TABLE, ON BOTH PLANES -- this data is exec argv and env-var names, none
+        of it touches `systemd`/`users` at all, so it needs no plane branching.
       '';
     };
   };
@@ -559,7 +650,14 @@ in
             look like a device node.
           '';
         })
-        rawDeviceNameOffenders;
+        rawDeviceNameOffenders
+
+      # ── HEADLESS NAMED ON A PLANE THAT CANNOT START IT ──────────────────────────────────────
+      # See `headlessUnsupportedAssertions`'s own comment. Only folded in on the system-manager
+      # plane -- a NixOS host naming a headless session is exercising exactly the feature that
+      # plane exists to support, so this list is empty there by construction (`plane` is a plain
+      # Nix value fixed before evaluation reaches here, never a `config`-derived condition).
+      ++ lib.optionals (plane == "system-manager") headlessUnsupportedAssertions;
 
     # This module's own read of `nixhost.resources.gpu` (see `inventoryProbe`'s own comment) folds
     # into the SAME warnings list session.nix's identical-path probe already contributes to --
@@ -567,35 +665,70 @@ in
     # call site, not once per module), never a duplicate of session.nix's own wording.
     warnings = (collectProbes [ inventoryProbe ]).warnings;
 
-    systemd.services = lib.mapAttrs' (name: session: lib.nameValuePair "nixdesktop-${name}" (mkSeatedUnit name session)) seatedSessions;
-
-    systemd.user.services = lib.mapAttrs' (name: session: lib.nameValuePair "nixdesktop-${name}" (mkHeadlessUnit name session)) headlessSessions;
-
-    # ── LINGERING, WITHOUT TOUCHING `users.users` AT ALL ─────────────────────────────────────
+    # ── ONE `systemd` VALUE, ASSEMBLED IN PLAIN NIX BEFORE `config` EVER SEES IT ─────────────
     #
-    # `users.users.<name>.linger = true` -- what this file used to write, unconditionally, for
-    # every headless session's user -- makes NixOS treat `<name>` as a NixOS-MANAGED account the
-    # moment it appears as a key in `users.users`, definition or not: `users-groups.nix`'s own
-    # activation logic then wants to create/verify a real local account for it. That is exactly
-    # backwards for the identity path this module's own comments (see `homeOf`) say it
-    # accommodates -- a user that exists only through an external source (lldap) must never be
-    # asserted into existence here, and there is no way to make that write conditional on "is this
-    # user ALREADY declared elsewhere" without reading the very option this module is contributing
-    # to (a genuine self-reference, not a subtlety worth routing around).
-    #
-    # So this reaches for the mechanism ONE LAYER BELOW `users.users.<name>.linger` instead of
-    # trying to gate it: `loginctl enable-linger USER` does exactly one thing on disk -- create an
-    # empty marker file at `/var/lib/systemd/linger/<username>` (verified live on corbet-server:
-    # `ls -la /var/lib/systemd/linger/` shows a zero-byte `richc`). `systemd-logind` reads that
-    # directory to decide which users' `user@<uid>.service` survives across reboots; it has never
-    # cared whether `<username>` is declared in `users.users` at all. `systemd.tmpfiles.rules`
-    # writing that same file declaratively (`f`, create-if-absent) reproduces the imperative
-    # command's ONLY on-disk effect, for ANY username -- NixOS-declared or externally-managed alike
-    # -- without this module ever touching `users.users` or `users.manageLingering`. Same idiom
-    # session.nix's own header already uses for seat assignment (`loginctl attach` is itself just a
-    # udev rule NixOS can render directly) -- a real logind mechanism has a declarative rendering,
-    # and reaching for it beats asking NixOS's own `users.*` option surface to accommodate a case
-    # it was not built for.
-    systemd.tmpfiles.rules = map (u: "f /var/lib/systemd/linger/${u} 0644 root root -") lingerUsers;
+    # `services`/`tmpfiles.rules` (always present) and `user.services` (nixos-plane only) all
+    # nest under the SAME top-level `systemd` key -- and a module's own `config` attribute is
+    # plain Nix, merged shallowly wherever plain Nix `//` is used directly (the module SYSTEM's
+    # recursive merge only ever applies ACROSS separate modules, never inside one module's own
+    # returned value). An earlier revision of this split built `systemd.services`/`.tmpfiles.rules`
+    # as top-level `config` keys and then appended `// lib.optionalAttrs (plane == "nixos")
+    # { systemd.user.services = ...; }` AFTER the closing brace of the main `config` attrset --
+    # which shallow-merges at the OUTER level, so the second attrset's `systemd = { user.services
+    # = ...; }` silently REPLACED the first's `systemd = { services = ...; }` wholesale, deleting
+    # `services`/`tmpfiles.rules` outright on the nixos plane (caught immediately: `nix flake
+    # check` on the very fixture this file's own header describes reported `attribute
+    # 'nixdesktop-desk' missing`). Building the full `systemd` attrset here, ONE level higher,
+    # means the plane-conditional `//` only ever merges DISTINCT keys (`services`/`tmpfiles` vs
+    # `user`) within that one attrset -- never two different values claiming the same key.
+    systemd = {
+      services = lib.mapAttrs' (name: session: lib.nameValuePair "nixdesktop-${name}" (mkSeatedUnit name session)) seatedSessions;
+
+      # ── LINGERING, WITHOUT TOUCHING `users.users` AT ALL ───────────────────────────────────
+      #
+      # `users.users.<name>.linger = true` -- what this file used to write, unconditionally, for
+      # every headless session's user -- makes NixOS treat `<name>` as a NixOS-MANAGED account the
+      # moment it appears as a key in `users.users`, definition or not: `users-groups.nix`'s own
+      # activation logic then wants to create/verify a real local account for it. That is exactly
+      # backwards for the identity path this module's own comments (see `homeOf`) say it
+      # accommodates -- a user that exists only through an external source (lldap) must never be
+      # asserted into existence here, and there is no way to make that write conditional on "is
+      # this user ALREADY declared elsewhere" without reading the very option this module is
+      # contributing to (a genuine self-reference, not a subtlety worth routing around). This
+      # concern is IDENTICAL on system-manager (`userborn` reads `config.users.users` exactly as
+      # eagerly, see this file's header), so the fix below applies unchanged on both planes.
+      #
+      # So this reaches for the mechanism ONE LAYER BELOW `users.users.<name>.linger` instead of
+      # trying to gate it: `loginctl enable-linger USER` does exactly one thing on disk -- create
+      # an empty marker file at `/var/lib/systemd/linger/<username>` (verified live on
+      # corbet-server: `ls -la /var/lib/systemd/linger/` shows a zero-byte `richc`).
+      # `systemd-logind` reads that directory to decide which users' `user@<uid>.service` survives
+      # across reboots; it has never cared whether `<username>` is declared in `users.users` at
+      # all. `systemd.tmpfiles.rules` writing that same file declaratively (`f`, create-if-absent)
+      # reproduces the imperative command's ONLY on-disk effect, for ANY username -- NixOS-declared
+      # or externally-managed alike -- without this module ever touching `users.users` or
+      # `users.manageLingering`. Same idiom session.nix's own header already uses for seat
+      # assignment (`loginctl attach` is itself just a udev rule NixOS can render directly) -- a
+      # real logind mechanism has a declarative rendering, and reaching for it beats asking
+      # NixOS's own `users.*` option surface to accommodate a case it was not built for.
+      # `systemd.tmpfiles.rules` is a real, identical option on both planes (see this file's
+      # header), so this needs no plane branching either.
+      tmpfiles.rules = map (u: "f /var/lib/systemd/linger/${u} 0644 root root -") lingerUsers;
+    }
+    # ── STRUCTURAL, NOT `mkIf`: `user.services` (i.e. the full `systemd.user.services` path)
+    # must never appear in the `systemd` attrset AT ALL on the system-manager plane. `plane` is a
+    # plain Nix value, fixed long before the module system builds a `config`, so
+    # `lib.optionalAttrs` decides at THAT level whether the key exists in the attrset in the first
+    # place -- there is no risk of the module system ever seeing a definition for an option
+    # system-manager never declares, unlike `lib.mkIf (plane == "nixos") { systemd.user.services =
+    # ...; }` would be (that guards the VALUE, not whether the KEY is written at all, and NixOS's
+    # own module system requires every written config path to match a declared option regardless
+    # of whether the guard ever evaluates true). See this file's header for the full reasoning,
+    # and checks/launcher.nix for the fixture that proves it: a system-manager-plane host stub
+    # that does not declare `systemd.user.services` still evaluates cleanly through this module
+    # with a seated-only session table.
+    // lib.optionalAttrs (plane == "nixos") {
+      user.services = lib.mapAttrs' (name: session: lib.nameValuePair "nixdesktop-${name}" (mkHeadlessUnit name session)) headlessSessions;
+    };
   };
 }
