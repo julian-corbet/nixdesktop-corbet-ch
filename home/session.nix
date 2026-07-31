@@ -2,12 +2,11 @@
 # daemon, a polkit agent, a keyring) into systemd user services, compositor-neutral itself and
 # sibling to the other home/*.nix modules in this repo.
 #
-# THE PROBLEM THIS REPLACES. A compositor's own config module (this repo's home/niri.nix,
-# before it moved out to nixniri; nixniri's home/niri.nix today) would otherwise emit
-# `spawn-at-startup` / `spawn-sh-at-startup` lines into config.kdl for exactly these components.
-# Those run once, at compositor session start, and niri (the compositor this was originally
-# verified against) has no way to run them again later. This breaks in three concrete ways, all
-# observed on a real running session:
+# THE PROBLEM THIS REPLACES. A compositor's own config module (nixniri's home/niri.nix, say)
+# would otherwise emit `spawn-at-startup` / `spawn-sh-at-startup` lines into config.kdl for
+# exactly these components. Those run once, at compositor session start, and niri (the
+# compositor this was originally verified against) has no way to run them again later. This
+# breaks in three concrete ways, all observed on a real running session:
 #
 #   1. niri live-reloads config.kdl on every change, so a `home-manager switch` updates binds and
 #      layout in a running session immediately -- but anything started only via spawn-at-startup
@@ -76,25 +75,20 @@ let
 
   # ── The swayidle invocation, assembled HERE ────────────────────────────────────────────────
   #
-  # This assembly used to live in each compositor's own config module (nixniri owned
-  # `niri.idle.command`, computed from its own timeout options) and this module took the finished
-  # string. The stated reason was to keep the assembly in exactly one place rather than duplicating
-  # it here -- correct instinct, wrong owner, and the error only became visible with a second
-  # compositor in the family:
+  # Assembled in this module, not in a compositor's own config module, for three reasons:
   #
   #   - swayidle is not compositor-specific in any way. It is a generic wlroots-adjacent idle
   #     daemon, and the invocation is character-for-character identical whether niri or scroll is
   #     running. Nothing about the assembly needs to know which compositor it is under.
   #   - Idle timeouts are POLICY -- "lock after 30 minutes, never suspend" is a statement about the
   #     host, not about a compositor's config syntax. Policy is this repo's whole remit.
-  #   - So putting the assembly in the compositor modules did not avoid duplication, it GUARANTEED
-  #     it: one copy per compositor repo, N copies for N compositors, each free to drift. Owning it
-  #     once here is what actually makes it one place.
+  #   - Assembling it per-compositor would not avoid duplication, it would GUARANTEE it: one copy
+  #     per compositor repo, N copies for N compositors, each free to drift. Owning it once here is
+  #     what actually makes it one place.
   #
-  # The old design also compared itself to waybar.nix taking a finished `settings` attrset. That
-  # analogy runs the other way: bar layout genuinely is the user's business and this repo has no
-  # opinion worth imposing on it, whereas a swayidle command line is boilerplate with exactly one
-  # correct shape.
+  # Bar layout, by contrast, genuinely is the user's business (see waybar.nix's own `settings`
+  # attrset) -- a swayidle command line has exactly one correct shape, so there is nothing of the
+  # user's to preserve by NOT assembling it centrally.
   #
   # `command` remains available as a verbatim override, for an idle daemon that is not swayidle at
   # all (hypridle, or a hand-rolled script). When it is null -- the default -- the invocation below
@@ -461,11 +455,6 @@ in
           swayidle's timeout/action grammar. Setting it makes `lockAfterSeconds` and
           `suspendAfterSeconds` inert for the daemon (they no longer describe what runs), so
           prefer the assembled form unless you actually need a different daemon.
-
-          HISTORY: this option used to be the ONLY way in, a required string, on the reasoning that
-          the compositor module should own the assembly. That was the wrong owner -- see this
-          file's `assembledIdleCommand` comment -- and it also meant every consumer hand-wired
-          `command = config.nixniri.niri.idle.command;` or silently got no idle daemon.
         '';
       };
     };

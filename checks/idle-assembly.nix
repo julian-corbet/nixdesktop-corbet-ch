@@ -1,14 +1,14 @@
-# Evaluates home/session.nix for real and asserts the swayidle assembly it now owns.
+# Evaluates home/session.nix for real and asserts the swayidle assembly it owns.
 #
 # WHY THIS FILE EXISTS AT ALL: `nix flake check` does not evaluate `homeManagerModules`. It lists
-# them as unchecked and moves on, so a green check here covered the nixosModules and the formatter
+# them as unchecked and moves on, so a green check here covers the nixosModules and the formatter
 # while proving nothing about home/session.nix -- including the assembly below, which is real
-# computed logic with several branches and was previously owned by a different repo entirely.
+# computed logic with several branches.
 #
-# The assembly moved here from the compositor modules (nixniri owned it, nixscroll never had it)
-# because swayidle's invocation is byte-identical under any wlroots compositor and idle timeouts are
-# host policy, so owning it per-compositor produced one copy per compositor repo. Having taken that
-# responsibility on, this repo owes it a test.
+# Owning the assembly here (rather than per-compositor) is deliberate: swayidle's invocation is
+# byte-identical under any wlroots compositor and idle timeouts are host policy, not compositor
+# config syntax -- owning it per-compositor would produce one copy per compositor repo. Having
+# taken that responsibility on, this repo owes it a test.
 { pkgs, lib ? pkgs.lib }:
 let
   stubs = { lib, ... }: {

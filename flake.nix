@@ -4,20 +4,18 @@
   # DELIBERATELY ONE INPUT. This flake pulls no desktop shell, no compositor, no package set —
   # it generates config and declares roles, and both of those are pure Nix.
   #
-  # NOT EVEN THE COMPOSITOR ITSELF IS AN INPUT. This repo used to ship niri's own home-manager
-  # module (home/niri.nix); it has moved out to its own sibling repo, nixniri, so this flake can
-  # stay genuinely compositor-neutral rather than pulling in one compositor's config generator by
-  # default. Pair this flake with nixniri (niri), nixscroll (scroll), or any future compositor
-  # repo that speaks the same `nixdesktop.want.compositor` contract — see profiles/desktop.nix
-  # and the README's "The split" section.
+  # NOT EVEN THE COMPOSITOR ITSELF IS AN INPUT. A compositor's own config module lives in its own
+  # sibling repo (nixniri for niri, nixscroll for scroll, or any future compositor repo that speaks
+  # the same `nixdesktop.want.compositor` contract), keeping this flake genuinely
+  # compositor-neutral rather than pulling in one compositor's config generator by default — see
+  # profiles/desktop.nix and the README's "The split" section.
   #
-  # In particular noctalia (a QML shell, supported by home/noctalia.nix) is NOT an input here,
-  # though nixarch carried it as one while these modules lived there. A flake input is fetched
-  # whenever this flake is evaluated, so declaring it would put a QML shell in the closure of
-  # every consumer — including the large majority running waybar, for whom it is dead weight.
-  # home/noctalia.nix therefore supplies only the SUPPLEMENT (the EGL-vendor-ICD fix a nix-built
-  # GPU client needs on a non-NixOS host, plus startup wiring); a consumer who wants noctalia
-  # adds the upstream flake as their own input and imports both modules together:
+  # In particular noctalia (a QML shell, supported by home/noctalia.nix) is NOT an input here. A
+  # flake input is fetched whenever this flake is evaluated, so declaring it would put a QML shell
+  # in the closure of every consumer — including the large majority running waybar, for whom it is
+  # dead weight. home/noctalia.nix therefore supplies only the SUPPLEMENT (the EGL-vendor-ICD fix a
+  # nix-built GPU client needs on a non-NixOS host, plus startup wiring); a consumer who wants
+  # noctalia adds the upstream flake as their own input and imports both modules together:
   #
   #   imports = [ inputs.noctalia.homeModules.default inputs.nixdesktop.homeManagerModules.noctalia ];
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -57,8 +55,7 @@
       # ── CONFIG GENERATION ─────────────────────────────────────────────────────────────────
       # home-manager modules that write real dotfiles. None of these install packages either:
       # they assume the named binaries exist, which is the backend's job. None of these is a
-      # compositor's own config module any more, either — that job now belongs to sibling repos
-      # like nixniri.
+      # compositor's own config module — that job belongs to sibling repos like nixniri.
       #
       # `homeManagerModules`, not `homeModules`: home-manager upstream has moved to the shorter
       # name, but every other project in this family (nixarch, nixniri, nixsh, nixremote) exports
@@ -91,23 +88,20 @@
         # so a consumer who already has either need not add this on top.
         startup = ./home/startup.nix;
 
-        # NO `default` HERE, DELIBERATELY. Before the niri module moved out to nixniri,
-        # `default` pointed at it: "niri is the module this project exists for; everything else
-        # decorates it." That framing no longer holds — home/*.nix is now a set of independent,
-        # separately opt-in components (a bar, a notifier, a session-service layer, a startup
-        # contract), none of which is "the" module a generic consumer wants by default. Picking
-        # one anyway (say, `session`, since it is the most broadly useful glue) would
-        # misrepresent it as the repo's primary artifact for a consumer who only wants, say,
-        # `mako`. Every other module class above still gets its `.default` (the policy profile),
-        # so this omission is scoped to `homeManagerModules` only.
+        # NO `default` HERE, DELIBERATELY. home/*.nix is a set of independent, separately opt-in
+        # components (a bar, a notifier, a session-service layer, a startup contract), none of
+        # which is "the" module a generic consumer wants by default. Picking one anyway (say,
+        # `session`, since it is the most broadly useful glue) would misrepresent it as the repo's
+        # primary artifact for a consumer who only wants, say, `mako`. Every other module class
+        # above still gets its `.default` (the policy profile), so this omission is scoped to
+        # `homeManagerModules` only.
       };
 
       # ── CHECKS ────────────────────────────────────────────────────────────────────────────
       # `nix flake check` does NOT evaluate `homeManagerModules` — it lists them as unchecked and
-      # moves on. Everything under home/ was therefore untested, which mattered little while those
-      # modules only rendered attrsets a consumer supplied, and matters a great deal now that
-      # home/session.nix assembles the swayidle invocation itself (taken over from the compositor
-      # modules, where it had been duplicated per compositor).
+      # moves on. Everything under home/ is therefore untested by default, which matters little
+      # for a module that only renders an attrset a consumer supplied, and matters a great deal for
+      # home/session.nix, which assembles the swayidle invocation itself with real branching logic.
       #
       # Scoped to that assembly rather than the whole session layer: it is the one place here with
       # real branching logic and a silent failure mode (a dropped suspend action, or a lockCommand

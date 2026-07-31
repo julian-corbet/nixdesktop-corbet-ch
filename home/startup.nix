@@ -1,12 +1,12 @@
 # home/startup.nix — the one thing nixdesktop owns across every compositor: a place to say
 # "run this at session start" without naming a compositor.
 #
-# THE PROBLEM THIS FIXES. home/noctalia.nix used to write directly into `nixdesktop.niri.
-# extraStartup` -- an option owned by (the now-removed) home/niri.nix, a niri-specific module.
-# That is a hard compile-time dependency: a consumer who imports noctalia but not a niri module
-# hit "The option `nixdesktop.niri.extraStartup' does not exist", a hard eval error, not a
-# graceful no-op -- and there was no path at all for a scroll consumer, since a scroll module has
-# (and should have) no reason to expose a niri-shaped option.
+# THE PROBLEM THIS AVOIDS. A niri-specific startup option, owned by a niri-specific module, is a
+# hard compile-time dependency for anything that wants to append a startup command: a consumer
+# who imports home/noctalia.nix without also importing that niri module would hit "the option
+# does not exist", a hard eval error, not a graceful no-op -- and there is no path at all for a
+# scroll consumer, since a scroll module has (and should have) no reason to expose a niri-shaped
+# option.
 #
 # THE FIX. `nixdesktop.startup` is a plain list of raw shell-command strings, owned by nixdesktop
 # itself rather than by any one compositor module. Any nixdesktop module that wants a command to
