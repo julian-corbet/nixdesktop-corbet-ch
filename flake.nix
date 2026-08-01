@@ -187,6 +187,35 @@
       # default`) never drags a NixOS-only module along.
       nixosModules.backend = ./modules/nixos-backend.nix;
 
+      # ── OO7 KEYRING: THE SYSTEM-LEVEL HALF ────────────────────────────────────────────────
+      # `home/session.nix`'s own `nixdesktop.session.keyring.oo7` (a home-manager module) wires
+      # the DAEMON unit and its `LoadCredentialEncrypted=`, but has no way to PROVISION that
+      # credential (a root-run act) or to bootstrap a first keyring FILE from it (oo7-daemon 0.6.0
+      # will not do so from a credential alone — see modules/oo7-credential.nix's and
+      # modules/oo7-keyring-bootstrap.nix's own headers for the full, measured account). These two
+      # modules are that missing system-level mechanism, split exactly where the NixOS and
+      # Arch/system-manager planes genuinely cannot share one module and nowhere else:
+      #
+      #   - `oo7Credential` (this file's own credential-provisioning module) needs only
+      #     `systemd.services` — a plain root oneshot, which renders identically on both planes
+      #     (see nixosModules.launcher's own comment on this file, above, for the confirmed-not-
+      #     assumed fact this rests on) — so it is exported to BOTH `nixosModules` and
+      #     `systemManagerModules`, the same shared-value pattern `monitors`/`layouts`/`session`
+      #     above already use.
+      #   - `oo7KeyringBootstrap` needs `systemd.user.services` — a `--user` unit — which NixOS can
+      #     render directly at system level (no home-manager required; `hosts/nixnas-devhome.nix`
+      #     in the infra checkout is the live proof) but system-manager structurally cannot render
+      #     AT ALL (modules/launcher.nix's own header states this as a read-from-source fact: its
+      #     module tree has no `systemd.user.services` anywhere). So this one is `nixosModules`
+      #     ONLY — a system-manager/Arch host reaches for `home/session.nix`'s own
+      #     `keyring.oo7.credential.bootstrap` convenience instead, the identical mechanism
+      #     (same measured facts, same `oo7-cli ... repair` invocation shape) wired through
+      #     home-manager, the only path that plane actually has to a `--user` unit. Two module-
+      #     system entry points sharing one set of facts, not two independently reinvented shapes.
+      nixosModules.oo7Credential = ./modules/oo7-credential.nix;
+      systemManagerModules.oo7Credential = ./modules/oo7-credential.nix;
+      nixosModules.oo7KeyringBootstrap = ./modules/oo7-keyring-bootstrap.nix;
+
       # ── CONFIG GENERATION ─────────────────────────────────────────────────────────────────
       # home-manager modules that write real dotfiles. None of these install packages either:
       # they assume the named binaries exist, which is the backend's job. None of these is a
@@ -253,6 +282,11 @@
           # providers enabled at once is a build failure, and the credential wiring
           # (`LoadCredentialEncrypted=`) appears iff `oo7.credential.enable` does.
           keyring = import ./checks/keyring.nix { inherit pkgs; };
+          # Proves the SYSTEM-level half of the same oo7 story keyring.nix proves the home-manager
+          # half of: `modules/oo7-credential.nix` (shared nixos+system-manager) and
+          # `modules/oo7-keyring-bootstrap.nix` (nixos-only) — see that file's own header for why
+          # the split falls exactly there and nowhere else.
+          oo7-provisioning = import ./checks/oo7-provisioning.nix { inherit pkgs; };
           # Same shape and reasoning as idle-assembly/keyring above -- proves the `patchbay`
           # component instead: one unit (not a pair), Restart=always (not the class default,
           # deliberately the opposite of keyring/lock-at-start's restart=no), and the

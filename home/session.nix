@@ -242,6 +242,47 @@ let
       ${cfg.keyring.oo7.credential.name} = cfg.keyring.oo7.credential.path;
     };
 
+  # ── oo7 keyring BOOTSTRAP command, assembled HERE ─────────────────────────────────────────────
+  # See `keyring.oo7.credential.bootstrap`'s own header comment (below, by its `enable`) for the
+  # full account of WHY this exists: oo7-daemon 0.6.0 will not conjure a brand-new encrypted
+  # keyring from a readable credential alone -- it creates an in-memory LOCKED placeholder and then
+  # blocks forever on a D-Bus Unlock prompt nothing on a headless/autologin host ever answers
+  # (measured live, see that comment). `oo7-cli -k <path> -s <password> repair` is the fix, proved
+  # live: it talks directly to the keyring FILE and never touches D-Bus or a Prompt at all.
+  #
+  # A plain shell one-liner (`command` + `runShell = true`, the existing mechanism above), NOT a
+  # `pkgs.writeShellScript` -- unlike `hosts/nixnas-devhome.nix`'s own NixOS-plane version of this
+  # identical mechanism, which can and does reach for `pkgs.writeShellScript` because that file is
+  # not this repo. This module is home-manager-only and, per the file header ("Nothing here
+  # installs anything ... package names and binary paths are platform-specific"), never wraps a
+  # store-path script around a package this repo has never named -- the same reasoning
+  # `execStartFor`'s own `runShell` branch already exists to serve for `idle`/`lock-at-start`
+  # above, reused here rather than inventing a second code path.
+  #
+  # `install -d`, bare, PATH-resolved -- deliberately NOT `${pkgs.coreutils}/bin/install`, for the
+  # identical reason `keyring.oo7.command` itself has no default and every one of this module's
+  # other assembled commands (`swayidle`, `pkill`, `gnome-keyring-daemon`) is a bare name too: this
+  # is a home-manager module, evaluated once and consumed on BOTH the NixOS-with-home-manager and
+  # Arch/system-manager-with-home-manager planes this repo serves, and `install`/`cat`/`dirname`
+  # are on every such host's own PATH by construction (base coreutils, not a package this repo
+  # would ever need to name platform-specific paths for).
+  oo7BootstrapCommand =
+    let
+      b = cfg.keyring.oo7.credential.bootstrap;
+      credentialName = cfg.keyring.oo7.credential.name;
+    in
+    "install -d -m 0700 \"$(dirname ${b.keyringPath})\""
+    + " && ${b.oo7CliCommand} -k ${b.keyringPath}"
+    # `$CREDENTIALS_DIRECTORY` is systemd's own env var for a unit using `LoadCredentialEncrypted=`
+    # (this unit's own `loadCredentialEncrypted` below reuses the SAME credential the daemon
+    # itself loads -- one credential, two readers, see that option's own header). Nested double
+    # quotes inside `$( )` are ordinary POSIX shell (the inner pair opens its own quoting context),
+    # not an escaping bug -- proved live on three hosts already using this exact idiom
+    # (`hosts/nixnas-devhome.nix`, `hosts/archlxc/oo7-credential-ensure.sh`,
+    # `hosts/elitebook/oo7-credential-ensure.sh`, all in the infra checkout this ports from).
+    + " -s \"$(cat \"$CREDENTIALS_DIRECTORY/${credentialName}\")\""
+    + " repair";
+
   # systemd's own ExecStart= line grammar is NOT shell quoting (`man 7 systemd.syntax`, section
   # QUOTING, confirmed locally): a whole item can be wrapped in single OR double quotes, and
   # within a quoted span backslash introduces a small fixed set of C-style escapes, one of which
@@ -275,6 +316,16 @@ let
       PartOf = svc.partOf;
       After = svc.after;
       Requires = svc.requires;
+      Before = svc.before;
+    }
+    # `ConditionPathExists` is omitted entirely, not rendered as `null`, when the option is left
+    # at its own default -- home-manager's systemd module writes whatever key is present verbatim
+    # into the unit file, so a present-but-null value would render a syntactically bogus
+    # `ConditionPathExists=` line (no value after `=`) for every one of the many components that
+    # never asked for this at all, rather than the same "absent means no directive" treatment
+    # `loadCredentialEncrypted`'s own empty-attrset case already gets below.
+    // lib.optionalAttrs (svc.conditionPathExists != null) {
+      ConditionPathExists = svc.conditionPathExists;
     };
     Service = {
       Type = svc.serviceType;
@@ -409,7 +460,48 @@ let
           loadCredentialEncrypted = keyringLoadCredentialEncrypted;
         }
       );
-    });
+    })
+    # ── oo7 keyring bootstrap: THE MISSING MECHANISM, now supplied ──────────────────────────────
+    #
+    # Gated on the full chain (`keyring.enable` -> `oo7.enable` -> `credential.enable` ->
+    # `credential.bootstrap.enable`), the same "guard before the generic submodule's own
+    # non-nullable types ever see a misconfigured value" reasoning the `keyring` entry immediately
+    # above already documents -- `config.assertions` below turns every INCOMPLETE combination
+    # (bootstrap wanted but the credential or the provider it bootstraps is not) into a named
+    # build failure rather than a silent no-op or a raw "not of type string" error.
+    //
+    (lib.optionalAttrs
+      (cfg.keyring.enable && cfg.keyring.oo7.enable && cfg.keyring.oo7.credential.enable
+        && cfg.keyring.oo7.credential.bootstrap.enable)
+      {
+        "oo7-keyring-bootstrap" = lib.mkDefault {
+          command = oo7BootstrapCommand;
+          runShell = true;
+          description = "Create the oo7 login keyring FILE, once, so oo7-daemon's credential-based unlock has something to unlock (idempotent, non-destructive)";
+          serviceType = "oneshot";
+          remainAfterExit = true;
+          # "no", the same reasoning `keyring`'s own gnome-keyring branch and `lock-at-start`
+          # already give: this wins once (the file now exists) or the daemon it prepares state for
+          # was never going to work regardless -- there is nothing to gain by restart-looping a
+          # bootstrap step, and `conditionPathExists` below already makes every run AFTER the first
+          # a guaranteed, harmless no-op rather than something `restart` would ever need to rescue.
+          restart = "no";
+          # See this option's own header comment (by its declaration, above `partOf`) for the `!`
+          # negation syntax and why a systemd Condition is what this needs rather than a shell-level
+          # `[ -e ... ]` guard.
+          conditionPathExists = "!${cfg.keyring.oo7.credential.bootstrap.keyringPath}";
+          # The one direction `after`/`wantedBy` (both left at their shared default,
+          # graphical-session.target, same as `keyring` itself -- both units land in the same
+          # transaction) cannot express: the DAEMON must wait for THIS, never the reverse. See
+          # `before`'s own option doc.
+          before = [ "keyring.service" ];
+          # The identical credential the daemon itself loads (`keyringLoadCredentialEncrypted`,
+          # already computed above) -- one credential, two readers, never a second copy asked for
+          # here: `oo7-cli repair`'s `-s <password>` and oo7-daemon's own unlock must see the exact
+          # same bytes, or the file this unit creates would not be the file the daemon can open.
+          loadCredentialEncrypted = keyringLoadCredentialEncrypted;
+        };
+      });
 in
 {
   options.nixdesktop.session = {
@@ -492,6 +584,28 @@ in
             '';
           };
 
+          conditionPathExists = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "!/home/richc/.local/share/keyrings/login.keyring";
+            description = ''
+              systemd's `ConditionPathExists=` (`Unit.ConditionPathExists` in the rendered unit).
+              `null`, the default, omits the directive entirely -- most components here have
+              nothing conditional about them and render exactly as before this option existed.
+
+              Added for a real, generic need this repo already had no way to express: a one-shot
+              bootstrap step that must run AT MOST ONCE, ever, gated on some FILE it itself
+              creates not existing yet (the `keyring.oo7.credential.bootstrap` convenience below is
+              the first consumer). A leading `!` negates the condition, systemd's own documented
+              syntax (`man 5 systemd.unit`) -- so `"!<path>"` reads as "run only when `<path>` is
+              ABSENT", and a later start with the path present is marked "skipped" (not failed),
+              not merely "guarded by a shell-level `[ -e ... ]` check that still counts as a
+              successful run every time". This is the identical mechanism `hosts/nixnas-devhome.nix`
+              (plain NixOS, no home-manager) already uses via its own `unitConfig.ConditionPathExists`
+              -- this option is the home-manager-module equivalent, not a different idea.
+            '';
+          };
+
           partOf = lib.mkOption {
             type = lib.types.listOf lib.types.str;
             default = [ "graphical-session.target" ];
@@ -523,6 +637,22 @@ in
               `wantedBy` is already the documented pattern (see header), and a hard `Requires=` on
               graphical-session.target would mean any hiccup in the compositor's own startup takes
               every session component down with it rather than just this one failing on its own.
+            '';
+          };
+
+          before = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            example = [ "keyring.service" ];
+            description = ''
+              systemd's `Before=`. Empty by default -- ordinary session components have no unit
+              that needs to wait FOR them (everything here is ordered AFTER
+              graphical-session.target, never before a sibling). The one component that does is a
+              one-shot bootstrap step that must complete before the real daemon it prepares state
+              for ever starts (`keyring.oo7.credential.bootstrap`, below, orders itself
+              `Before = [ "keyring.service" ]` this way) -- `After=`/`Wants=` alone cannot express
+              that direction, since those only ever say what THIS unit waits for, never what waits
+              for it.
             '';
           };
 
@@ -1033,6 +1163,98 @@ in
               on that host and only after that passphrase, with no TPM anywhere in the chain.
             '';
           };
+
+          # ── bootstrap: THE FIRST-KEYRING GAP, MEASURED, NOT ASSUMED CLOSED BY THE CREDENTIAL ──
+          #
+          # THE GAP. A daemon that can read its unlock credential still cannot conjure a keyring to
+          # unlock out of nothing. Measured live (`hosts/nixnas-devhome.nix`, the infra checkout
+          # this ports from, before nixdesktop carried any answer of its own): on a data directory
+          # with no keyring file present, oo7-daemon 0.6.0 logs `Unlocking session keyring with
+          # user's systemd credentials` (it DID read the credential), immediately followed by `No
+          # default collection found, creating 'Login' keyring` / `Keyring file not found, creating
+          # a new one` / `Created default 'Login' collection (locked)` -- i.e. the credential is
+          # read and then simply has nothing to unlock, so the daemon falls back to an in-memory
+          # LOCKED placeholder collection (`oo7::file::locked_keyring`, a distinct type from a real
+          # file-backed `Keyring` a password can unlock) that stays `Locked = true` regardless.
+          # `oo7-cli unlock -s ""` against it fails outright (`Keyring file doesn't support
+          # unlocking`), and a `store` call opens a D-Bus Prompt and blocks forever waiting for a
+          # `Completed` signal nothing on a headless/autologin host ever sends -- no portal, no GUI,
+          # and the systemd credential is never consulted by that code path at all.
+          #
+          # THE FIX, proved live end-to-end. `oo7-cli` has a second, entirely separate mode that
+          # talks directly to a keyring FILE (`-k <path> -s <secret> repair`) and never touches
+          # D-Bus or a Prompt at all: it creates a real, empty, password-encrypted keyring file with
+          # zero D-Bus round-trip (proved: a fresh path with no items needed came back "0 broken
+          # items were deleted", genuinely AES-encrypted -- the plaintext password appears nowhere
+          # in the resulting bytes, and a wrong password on lookup fails with "Item is not valid and
+          # cannot be decrypted" rather than silently succeeding). Land that file at the exact
+          # well-known path oo7-daemon's own startup scan looks for, BEFORE oo7-daemon ever starts,
+          # and its normal startup path changes completely: `Scanning for v0 keyrings in .../
+          # keyrings` / `Found v0 keyring: <name>` / `Unlocked keyring '<name>' from "..."` /
+          # `Locked = false`, zero prompts.
+          #
+          # WHY THIS NEVER TOUCHES `oo7.command`'s OWN `keyring.service` UNIT DIRECTLY. This is a
+          # SEPARATE one-shot unit (`oo7-keyring-bootstrap`, wired into `wellKnownServices` above),
+          # not a `serviceType = "oneshot"` override smuggled onto the daemon's own entry -- the
+          # daemon unit must stay a real, restartable `Type = "simple"` long-running process (see
+          # the keyring assembly's own header, "oo7-daemon -- DOES NOT MATCH gnome-keyring's
+          # shape"), and a one-shot gate that runs once and a long-running daemon that runs forever
+          # are two different systemd unit shapes with no way to be the same unit. `before = [
+          # "keyring.service" ]` on the bootstrap entry (not `after` on the daemon's own) is what
+          # orders them, since `keyring`'s own assembly (above) has no reason to know a bootstrap
+          # step exists at all when this is disabled -- see `before`'s own generic option doc.
+          bootstrap = {
+            enable = lib.mkEnableOption ''
+              close the first-keyring gap above by running `oo7-cli -k <keyringPath> -s <password>
+              repair` once, gated on `keyringPath` not already existing, strictly before
+              `keyring.service` (oo7-daemon itself) ever starts. Requires `credential.enable`
+              (this reuses the identical credential the daemon loads -- see this option's own
+              header) -- meaningless, and asserted against, otherwise.
+
+              LEAVE THIS OFF for a host whose keyring file already holds real secrets under some
+              OTHER name than `keyringPath` names (a migrated Default_keyring.keyring, say): this
+              mechanism only ever CREATES an empty keyring at a path that does not yet exist, it
+              never touches, renames, or shadows one that is already there under a different name.
+              Point `keyringPath` at the file that is actually meant to be the login keyring, or
+              leave `bootstrap.enable = false` and provision that first keyring some other way.
+            '';
+
+            keyringPath = lib.mkOption {
+              type = lib.types.str;
+              example = "/home/richc/.local/share/keyrings/login.keyring";
+              description = ''
+                The keyring FILE to create if (and only if) it does not exist yet -- the exact
+                well-known path oo7-daemon's own startup scan looks for. NO DEFAULT: the FILENAME
+                is not fixed across hosts -- gnome-keyring's own convention names the default
+                collection `login.keyring`, and oo7 stays compatible with that layout (confirmed
+                live via oo7-daemon's own DEBUG log: `Found v0 keyring: login`), but a host that
+                migrated from a differently-named collection (`Default_keyring.keyring`, observed
+                on at least one host in this estate) must point here instead -- see this option
+                group's own `enable` doc for why this mechanism must never invent a second, empty,
+                competing keyring under a name nothing already uses. Resolves relative to nothing:
+                give the full path (`$HOME` does not expand inside a Nix string -- interpolate
+                `config.home.homeDirectory` yourself, the same way this repo's own checks do).
+              '';
+            };
+
+            oo7CliCommand = lib.mkOption {
+              type = lib.types.str;
+              example = lib.literalExpression ''"''${pkgs.oo7}/bin/oo7-cli"'';
+              description = ''
+                `oo7-cli` invocation -- NO DEFAULT, deliberately, the same reasoning as `oo7.
+                command` above: `oo7-cli`'s installed location differs per platform (confirmed live
+                against BOTH: nixpkgs' `oo7` package installs it to `$out/bin/oo7-cli`, ON PATH,
+                unlike `oo7-daemon`'s own `$out/libexec/oo7-daemon`; the real Arch `oo7` 0.6.0-3
+                package installs it to `/usr/bin/oo7-cli`, also on PATH, again unlike
+                `oo7-daemon`'s own `/usr/lib/oo7-daemon`) -- so unlike the daemon binary, a bare
+                `"oo7-cli"` WOULD resolve correctly on either platform via PATH alone. Left
+                mandatory with no default anyway, matching `oo7.command`'s own convention rather
+                than special-casing this one binary as the exception: this repo names no package,
+                full stop, and a silent default here would be exactly the kind of package-name
+                knowledge the file header says this module never carries.
+              '';
+            };
+          };
         };
       };
 
@@ -1147,6 +1369,37 @@ in
           There is no sane default location for the encrypted credential blob across hosts -- set
           it to wherever `systemd-creds encrypt --user --uid=<uid> --with-key=host` actually wrote
           it (see that option's own doc for the full proof).
+        '';
+      }
+      # ── oo7 keyring bootstrap assertions ──────────────────────────────────────────────────────
+      # Two independent booleans again (`credential.bootstrap.enable` nested two levels under
+      # `oo7.enable`/`credential.enable`, neither of which it implies just by being set), the exact
+      # same reasoning as `oo7.enable`/`gnomeKeyring.enable` above: a consumer can set
+      # `bootstrap.enable = true` while never having turned on the credential (or the provider)
+      # that bootstrap step exists to serve, and that must be a named build failure rather than a
+      # silently-inert option or a bootstrap unit that renders with a `LoadCredentialEncrypted=`
+      # pointing at nothing (`keyringLoadCredentialEncrypted` would be `{ }` in that case, which the
+      # wellKnownServices guard's OWN gate already prevents by not being reached at all when
+      # `credential.enable` is false -- but a consumer relying on that silent non-render instead of
+      # a clear error is exactly the class of failure this file's assertions exist to name).
+      {
+        assertion = !(cfg.keyring.oo7.credential.bootstrap.enable && !cfg.keyring.oo7.credential.enable);
+        message = ''
+          nixdesktop.session.keyring.oo7.credential.bootstrap.enable is true but
+          `credential.enable` is false. The bootstrap step reuses the daemon's own unlock
+          credential (one credential, two readers -- see `credential.bootstrap`'s own doc) and has
+          nothing to load without it. Enable `credential.enable` too (with a real `credential.path`
+          -- see that option's own assertion above), or turn bootstrap back off.
+        '';
+      }
+      {
+        assertion = !(cfg.keyring.oo7.credential.bootstrap.enable && !cfg.keyring.oo7.enable);
+        message = ''
+          nixdesktop.session.keyring.oo7.credential.bootstrap.enable is true but `oo7.enable` is
+          false. This bootstrap step exists solely to prepare a keyring FILE for oo7-daemon's own
+          credential-based unlock (see `credential.bootstrap`'s own header) -- it has no purpose,
+          and nothing to order `before = [ "keyring.service" ]` against, when oo7 itself is not the
+          active provider. Enable `oo7.enable`, or turn bootstrap back off.
         '';
       }
     ];

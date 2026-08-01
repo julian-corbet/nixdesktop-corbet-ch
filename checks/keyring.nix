@@ -60,6 +60,11 @@ let
     let services = (evalWith settings).nixdesktop.session.services; in
     if services ? keyring then services.keyring else null;
 
+  # Same shape, for the bootstrap convenience's own rendered entry.
+  bootstrapService = settings:
+    let services = (evalWith settings).nixdesktop.session.services; in
+    if services ? "oo7-keyring-bootstrap" then services."oo7-keyring-bootstrap" else null;
+
   # `assertions` lands at the TOP LEVEL of the evaluated config (the stub's own flat option,
   # matching real home-manager's shape), not nested under `nixdesktop.session` -- `firedMessages`
   # is handed the whole evaluated config accordingly, exactly like checks/support.nix's own
@@ -131,6 +136,57 @@ let
     oo7 = { enable = true; command = fakeOo7Command; credential.enable = true; };
   });
 
+  # ── BOOTSTRAP FIXTURES ───────────────────────────────────────────────────────────────────────
+  fakeKeyringPath = "/home/richc/.local/share/keyrings/login.keyring";
+  fakeOo7CliCommand = "/nix/store/fake-oo7/bin/oo7-cli";
+
+  # The full, correctly-nested chain: oo7 the provider, its credential, and the bootstrap step
+  # that reuses that same credential -- the shape a real host actually wants.
+  withBootstrap = extra: withKeyring ({
+    oo7 = {
+      enable = true;
+      command = fakeOo7Command;
+      credential = {
+        enable = true;
+        path = fakeCredentialPath;
+        bootstrap = {
+          enable = true;
+          keyringPath = fakeKeyringPath;
+          oo7CliCommand = fakeOo7CliCommand;
+        };
+      };
+    };
+  } // extra);
+
+  bootstrapEnabledService = bootstrapService (withBootstrap { });
+  bootstrapDisabledService = bootstrapService (withKeyring {
+    oo7 = { enable = true; command = fakeOo7Command; credential = { enable = true; path = fakeCredentialPath; }; };
+  });
+
+  # bootstrap.enable = true but credential.enable left false -- the credential the bootstrap step
+  # would reuse was never turned on at all.
+  bootstrapNoCredentialMsgs = keyringAssertionMessages (withKeyring {
+    oo7 = {
+      enable = true;
+      command = fakeOo7Command;
+      credential.bootstrap = { enable = true; keyringPath = fakeKeyringPath; oo7CliCommand = fakeOo7CliCommand; };
+    };
+  });
+
+  # bootstrap.enable = true, credential.enable = true too, but oo7.enable itself left false --
+  # nothing for `before = [ "keyring.service" ]` to ever matter against.
+  bootstrapNoOo7Msgs = keyringAssertionMessages {
+    keyring = {
+      enable = true;
+      gnomeKeyring.enable = true; # so "nothing tells it what to run" does not ALSO fire here
+      oo7.credential = {
+        enable = true;
+        path = fakeCredentialPath;
+        bootstrap = { enable = true; keyringPath = fakeKeyringPath; oo7CliCommand = fakeOo7CliCommand; };
+      };
+    };
+  };
+
   results = {
     # ── THE PROVIDER CHOICE RENDERS THE RIGHT UNIT ────────────────────────────────────────────
     "oo7 renders its own configured command verbatim" =
@@ -198,6 +254,39 @@ let
       overrideWithOo7Service.command == "custom-keyring --foreground"
       && overrideWithOo7Service.serviceType == "simple"
       && overrideWithOo7Service.restart == "on-failure";
+
+    # ── THE MISSING MECHANISM: oo7 KEYRING BOOTSTRAP ─────────────────────────────────────────
+    "bootstrap.enable renders an oo7-keyring-bootstrap service" =
+      bootstrapEnabledService != null;
+    "bootstrap command names both the configured oo7-cli command and the keyring path" =
+      lib.hasInfix fakeOo7CliCommand bootstrapEnabledService.command
+      && lib.hasInfix fakeKeyringPath bootstrapEnabledService.command
+      && lib.hasInfix "repair" bootstrapEnabledService.command;
+    "bootstrap runs through a shell (needs $(...) substitution), oneshot, RemainAfterExit" =
+      bootstrapEnabledService.runShell == true
+      && bootstrapEnabledService.serviceType == "oneshot"
+      && bootstrapEnabledService.remainAfterExit == true;
+    "bootstrap never restarts -- a one-shot gate that wins once or not at all" =
+      bootstrapEnabledService.restart == "no";
+    "bootstrap's ConditionPathExists negates the configured keyring path, systemd's own '!' syntax" =
+      bootstrapEnabledService.conditionPathExists == "!${fakeKeyringPath}";
+    "bootstrap orders itself Before the daemon's own unit (keyring.service), never After" =
+      bootstrapEnabledService.before == [ "keyring.service" ];
+    "bootstrap reuses the SAME LoadCredentialEncrypted as the daemon -- one credential, two readers" =
+      bootstrapEnabledService.loadCredentialEncrypted == { "oo7.keyring-encryption-password" = fakeCredentialPath; };
+
+    "bootstrap.enable = false (the default) renders no such service at all" =
+      bootstrapDisabledService == null;
+
+    "bootstrap.enable with credential.enable = false trips its own named assertion" =
+      countMatching "credential.enable" bootstrapNoCredentialMsgs == 1;
+    "...and produces no bootstrap service either (guarded, not merely warned about)" =
+      bootstrapService (withKeyring {
+        oo7.credential.bootstrap = { enable = true; keyringPath = fakeKeyringPath; oo7CliCommand = fakeOo7CliCommand; };
+      }) == null;
+
+    "bootstrap.enable with oo7.enable = false trips its own named assertion" =
+      countMatching "oo7.enable" bootstrapNoOo7Msgs == 1;
   };
 in
 report "keyring" results
