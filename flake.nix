@@ -247,6 +247,12 @@
         let pkgs = nixpkgs.legacyPackages.${system}; in
         {
           idle-assembly = import ./checks/idle-assembly.nix { inherit pkgs; };
+          # Same shape and same reasoning as idle-assembly above (a home-manager module `nix flake
+          # check` never evaluates on its own) -- proves the keyring PROVIDER assembly instead:
+          # oo7 vs gnome-keyring render the right (verified-not-assumed) Type=/Restart=, two
+          # providers enabled at once is a build failure, and the credential wiring
+          # (`LoadCredentialEncrypted=`) appears iff `oo7.credential.enable` does.
+          keyring = import ./checks/keyring.nix { inherit pkgs; };
           monitor-identity = import ./checks/monitor-identity.nix { inherit pkgs; };
           layout-geometry = import ./checks/layout-geometry.nix { inherit pkgs; };
           # `sessionModule` is passed already closed over nixhost's `probeFact`/`collectProbes`,

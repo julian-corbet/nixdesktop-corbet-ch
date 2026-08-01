@@ -115,6 +115,132 @@ let
     then cfg.idleAndLock.command
     else assembledIdleCommand;
 
+  # ── The keyring PROVIDER, assembled HERE ───────────────────────────────────────────────────
+  #
+  # THE DECISION THIS REPLACES. Until this pass, `keyring` took one bare `command` string (an
+  # arbitrary invocation, same shape as `polkitAgent.command`) and hardcoded `serviceType =
+  # "forking"; restart = "no";` unconditionally -- correct for gnome-keyring-daemon, the only
+  # provider this module had ever run, but silently WRONG the moment a second provider with a
+  # different process shape showed up. oo7 IS THE DECISION (operator-mandated): it replaces
+  # gnome-keyring as the Secret Service (`org.freedesktop.secrets`) provider on every host that
+  # autologins with no PAM auth phase -- see modules/launcher.nix's own header, "DESIGN A", for the
+  # full account of why autologin exists at all and why it leaves gnome-keyring only one option,
+  # an EMPTY keyring password (secrets unencrypted at rest). oo7's own server README documents a
+  # SECOND unlock path -- a systemd credential named `oo7.keyring-encryption-password` -- that
+  # needs no typed password at all, so the keyring stays genuinely encrypted on an autologin host.
+  # `credential` below is that path, wired exactly as proved live (see its own comment for the
+  # proof and the gotcha it uncovered).
+  #
+  # WHY TWO NAMED BOOLEANS (`oo7.enable` / `gnomeKeyring.enable`), NOT ONE `provider = "oo7" |
+  # "gnome-keyring"` ENUM. An enum was the first shape tried and rejected for two concrete reasons:
+  #
+  #   1. "Exactly one provider may ever be active" is meant to be an ASSERTABLE, catchable
+  #      misconfiguration -- a consumer editing a host's config wrong should get a named build
+  #      failure, not a silently-accepted last-write-wins value. A `provider` enum cannot express
+  #      "two are set" AT ALL (an option holds one value), so there would be nothing to assert --
+  #      the failure mode this change exists to make loud would go back to being structurally
+  #      unrepresentable, which reads as "solved" but only hides the seam: a consumer who reaches
+  #      past the enum into `nixdesktop.session.services.keyring` directly (the same generic
+  #      escape hatch every other well-known block documents) can still start a second daemon under
+  #      a different unit name with nothing here to notice. Two independent booleans, checked in
+  #      `config.assertions` below, make "both on" a real, reachable, caught state instead.
+  #   2. Each provider needs its OWN configuration surface -- oo7 has `credential.*` (nothing
+  #      remotely like it applies to gnome-keyring), and a future third provider will have its own
+  #      shape again. `bar`/`notifications`/`osd` already solve exactly this with one named
+  #      `enable`+`command` block per implementation choice (see the header comment's own "reserved
+  #      names" list) rather than a closed enum plus scattered `lib.mkIf (provider == "x")` guards
+  #      -- `keyring` now follows the same idiom instead of being the one outlier.
+  #
+  # PROVIDER-SPECIFIC Type=/Restart=, VERIFIED PER PROVIDER, NOT ASSUMED TO MATCH:
+  #
+  #   gnome-keyring-daemon -- UNCHANGED from before this pass: `Type=forking`/`Restart=no`. See the
+  #   `gnomeKeyring` option below for the (unmodified) reasoning, carried over from the original
+  #   single-provider `keyring.command` doc.
+  #
+  #   oo7-daemon -- DOES NOT MATCH gnome-keyring's shape, confirmed by inspecting the REAL package,
+  #   not assumed from gnome-keyring's precedent: `nix build nixpkgs#oo7-server` (0.6.0 -- the
+  #   exact version the operator's mandate names as the available official package) and reading
+  #   both files it ships under `share/systemd/user/oo7-daemon.service`:
+  #
+  #     [Service]
+  #     Type=simple
+  #     ExecStart=/run/wrappers/bin/oo7-daemon
+  #     Restart=on-failure
+  #     ImportCredential=oo7.keyring-encryption-password
+  #     ...
+  #
+  #   `Type=simple`, never forking -- oo7-daemon is a modern, systemd-native Rust daemon that stays
+  #   in the foreground; wrapping it in `Type=forking` here would be the EXACT bug gnome-keyring's
+  #   own comment warns about for the opposite case (systemd ties unit state to a process that
+  #   exits immediately -- for `Type=forking` with no PIDFile that means the FIRST process to exit
+  #   in the unit's cgroup, which for a true `Type=simple` daemon is the real, only process, so the
+  #   unit would flip to "inactive (dead)" milliseconds after a fully successful start). `Restart=
+  #   on-failure`, never `no` -- oo7-daemon is a genuine long-running service meant to survive a
+  #   crash and come back, not gnome-keyring's-forking-launcher's one-shot bootstrap step; `no`
+  #   would leave a crashed keyring dead for the rest of the session with nothing bringing it back.
+  #
+  #   NOT COPIED HERE: `ExecStart=/run/wrappers/bin/oo7-daemon` and everything below `Restart=` in
+  #   the block above. That path is nixpkgs' own choice (`oo7-server`'s `useWrappedDaemon = true`
+  #   default, confirmed in `pkgs/by-name/oo/oo7-server/package.nix`: a `postFixup` step rewrites
+  #   the shipped unit's `ExecStart=` from the real store path to that fixed `/run/wrappers/...`
+  #   one), and it only resolves to a real binary on a host whose SYSTEM config also declares
+  #   `security.wrappers.oo7-daemon` -- confirmed by reading nixpkgs' own paired NixOS module,
+  #   `nixos/modules/services/desktops/oo7.nix` (`services.oo7.enable`): it grants the wrapped
+  #   binary `CAP_IPC_LOCK` (mlock, so decrypted secrets can never be swapped to disk -- the same
+  #   protection gnome-keyring's own daemon gets for free via a plain `mlockall()` call it is
+  #   permitted to make as an ordinary unprivileged process using a DIFFERENT mechanism). A
+  #   home-manager module has no `pkgs`, no root, and no route to `security.wrappers` -- there is
+  #   structurally no way for `nixdesktop.session.keyring.oo7` to reproduce that wrapper from here.
+  #   `oo7.command` below therefore points at the real, UNWRAPPED `libexec` path (see that option's
+  #   own doc) and runs without `CAP_IPC_LOCK`. Flagged explicitly, not silently accepted as
+  #   equivalent: a host that needs the mlock guarantee should prefer NixOS's own `services.oo7`
+  #   over this module for the keyring role specifically, or accept the gap knowingly.
+  #
+  # THE CREDENTIAL DIRECTIVE: `LoadCredentialEncrypted=`, NOT UPSTREAM'S OWN `ImportCredential=`.
+  # The unit text above shows oo7-daemon's OWN packaged unit already carries
+  # `ImportCredential=oo7.keyring-encryption-password` unconditionally -- a systemd directive that
+  # searches a small set of WELL-KNOWN credential-store directories (`/etc/credstore.encrypted`,
+  # `$XDG_CONFIG_HOME/credstore.encrypted` for a user manager, per `systemd.exec(5)`) for a file
+  # matching that name and imports it if present, silently skipping it otherwise. This module's own
+  # `credential` option (see below) renders `LoadCredentialEncrypted=<id>:<path>` instead -- an
+  # explicit id+path, not a glob over a search path -- because that is the EXACT directive the live
+  # proof this pass implements actually exercised end-to-end on corbet-server (`systemd-run --user`
+  # with `LoadCredentialEncrypted=` against a `--user --uid=1000`-scoped blob), and this module has
+  # no way to guarantee a consumer's credential lands in one of `ImportCredential=`'s well-known
+  # directories rather than wherever their own provisioning chose to put it. A consumer who DOES
+  # keep the file at oo7's own default search location gets identical behaviour either way, since
+  # oo7-daemon's packaged unit's `ImportCredential=` line fires independently of anything this
+  # module renders -- the two are complementary belt-and-braces, not competing.
+  keyringProviderCommand =
+    if cfg.keyring.oo7.enable then cfg.keyring.oo7.command
+    else if cfg.keyring.gnomeKeyring.enable then cfg.keyring.gnomeKeyring.command
+    else null;
+
+  effectiveKeyringCommand =
+    if cfg.keyring.command != null
+    then cfg.keyring.command
+    else keyringProviderCommand;
+
+  # See the header block above for why these two differ per provider, verified against the real
+  # packaged units rather than assumed identical. Falls through to gnome-keyring's own shape
+  # (`forking`/`no`) whenever oo7 specifically is not the one enabled -- this is also the fallback
+  # for a consumer using the `command` escape hatch with neither box ticked, preserving this
+  # module's pre-existing behaviour for anyone not opting into oo7.
+  keyringServiceType = if cfg.keyring.oo7.enable then "simple" else "forking";
+  keyringRestart = if cfg.keyring.oo7.enable then "on-failure" else "no";
+
+  # `LoadCredentialEncrypted=` entries for the rendered unit -- populated from `oo7.credential.*`
+  # when that convenience is enabled, empty otherwise (which `toSystemdUnit` below renders as no
+  # directive at all, same as an empty `environment`). A plain attrset, not gated on
+  # `cfg.keyring.oo7.enable` here -- the credential sub-option is namespaced under `oo7` already
+  # (nested under a disabled `oo7.enable` it can still be defined but inert, since nothing reads it
+  # unless `credential.enable` is also true), so re-checking the parent here would only duplicate
+  # that guard, not add a new one.
+  keyringLoadCredentialEncrypted =
+    lib.optionalAttrs cfg.keyring.oo7.credential.enable {
+      ${cfg.keyring.oo7.credential.name} = cfg.keyring.oo7.credential.path;
+    };
+
   # systemd's own ExecStart= line grammar is NOT shell quoting (`man 7 systemd.syntax`, section
   # QUOTING, confirmed locally): a whole item can be wrapped in single OR double quotes, and
   # within a quoted span backslash introduces a small fixed set of C-style escapes, one of which
@@ -155,6 +281,12 @@ let
       Restart = svc.restart;
       RemainAfterExit = svc.remainAfterExit;
       Environment = lib.mapAttrsToList (k: v: "${k}=${v}") svc.environment;
+      # One `LoadCredentialEncrypted=ID:PATH` line per attr, same "always present, empty list
+      # renders no directive" treatment as `Environment=` immediately above -- see
+      # `loadCredentialEncrypted`'s own option doc for the mechanism this populates, and the
+      # keyring assembly's header comment for the one convenience that fills it in today.
+      LoadCredentialEncrypted =
+        lib.mapAttrsToList (id: path: "${id}:${path}") svc.loadCredentialEncrypted;
     };
     Install = {
       WantedBy = svc.wantedBy;
@@ -220,9 +352,10 @@ let
     # Type=forking because `swaylock -f` daemonizes: it forks once the screen is actually covered,
     # which is precisely the event worth ordering on -- systemd treats the unit as started only
     # then, so anything ordered after this cannot paint to an unlocked screen first. `restart =
-    # "no"` for the same reason the keyring component sets it: this is a one-shot gate, and a
-    # locker that exits because the human unlocked it has SUCCEEDED, not failed. Restarting it
-    # would re-lock the session the instant they got in.
+    # "no"` for the same reason the keyring component's gnome-keyring provider sets it (see that
+    # option group's own header -- this is now provider-dependent there, but still universally true
+    # here): this is a one-shot gate, and a locker that exits because the human unlocked it has
+    # SUCCEEDED, not failed. Restarting it would re-lock the session the instant they got in.
     // (lib.optionalAttrs (cfg.idleAndLock.enable && cfg.idleAndLock.lockAtStart) {
       "lock-at-start" = lib.mkDefault {
         command = "${lockBin} -f";
@@ -237,14 +370,29 @@ let
         description = "Polkit authentication agent";
       };
     })
-    // (lib.optionalAttrs cfg.keyring.enable {
-      keyring = lib.mkDefault {
-        inherit (cfg.keyring) command;
-        description = "Secret-service (org.freedesktop.secrets) provider";
-        # See the `keyring` option below for why this is Type=forking and Restart=no.
-        serviceType = "forking";
-        restart = "no";
-      };
+    # Guarded on `effectiveKeyringCommand != null` too, the same shape as the idle daemon above --
+    # NOT to make "enabled, no provider chosen" a legitimate silent no-op (unlike idle, it isn't:
+    # see the `nixdesktop.session.keyring: enabled with nothing to run` assertion in `config`
+    # below, which turns exactly this case into a named build failure), but so a misconfigured
+    # value never reaches `command`'s own `str` (non-nullable) option type first -- that would fail
+    # as a raw, unlabelled "option is not of type string" error, reached before this module's own
+    # assertions are ever consulted. This guard is the difference between that and the clean,
+    # named message the assertion produces instead.
+    // (lib.optionalAttrs (cfg.keyring.enable && effectiveKeyringCommand != null) {
+      keyring = lib.mkDefault (
+        {
+          command = effectiveKeyringCommand;
+          description = "Secret-service (org.freedesktop.secrets) provider";
+          # See the keyring assembly's header comment (above, by `keyringServiceType`) for why
+          # this is provider-dependent and verified per provider rather than a single assumed
+          # shape.
+          serviceType = keyringServiceType;
+          restart = keyringRestart;
+        }
+        // lib.optionalAttrs (keyringLoadCredentialEncrypted != { }) {
+          loadCredentialEncrypted = keyringLoadCredentialEncrypted;
+        }
+      );
     });
 in
 {
@@ -378,6 +526,47 @@ in
             default = { };
             example = { NO_AT_BRIDGE = "1"; };
             description = "Extra environment variables for the executed process.";
+          };
+
+          loadCredentialEncrypted = lib.mkOption {
+            type = lib.types.attrsOf lib.types.str;
+            default = { };
+            example = {
+              "oo7.keyring-encryption-password" = "/etc/credstore.encrypted/oo7.keyring-encryption-password";
+            };
+            description = ''
+              systemd's `LoadCredentialEncrypted=`, one `ID = PATH;` entry per directive (systemd
+              permits repeating this key; this option therefore takes an attrset, not a single
+              string, the same shape as `environment` above). THE MECHANISM the `keyring.oo7.
+              credential.*` convenience below populates for oo7's autologin-safe unlock (see the
+              keyring assembly's header comment) -- exposed generically here, on the same
+              "mechanism vs convenience" split as `command`/`environment`, for any other unit that
+              needs a systemd-encrypted-credential-backed secret and isn't already one of the named
+              blocks.
+
+              THE `--user`/`--uid` SCOPE GOTCHA, PROVED LIVE, NOT ASSUMED. A credential encrypted
+              the "obvious" way -- `systemd-creds encrypt --with-key=host <input> <path>`, no scope
+              flag -- fails hard when loaded into a systemd `--user` unit: `Scope mismatch` /
+              `Failed to set up credentials: Wrong medium type`, exit 243/CREDENTIALS. Verified live
+              on corbet-server (richc/uid 1000, via SSH from CORBET-ELITEBOOK): a `systemd-run
+              --user` unit given exactly this option's own directive, fed a host-key-encrypted blob
+              produced WITHOUT `--user --uid=`, failed with precisely that error; re-encrypting the
+              identical plaintext with `systemd-creds encrypt --user --uid=1000 --with-key=host ...`
+              -- a USER-SCOPED blob -- and changing nothing else made the same unit work. This
+              option cannot enforce that scoping from here: it only wires an already-encrypted PATH
+              into the unit, the same way `command` only wires an already-built invocation. Getting
+              the encryption step right is the consumer's (or the host's own provisioning's) job.
+
+              THE HOST KEY, DELIBERATELY, NEVER THE TPM. `--with-key=host` (not `--with-key=tpm2`)
+              was the mandate this proof implements, not an oversight this module quietly went
+              along with: the host key (`/var/lib/systemd/credential.secret`) lives on the same
+              LUKS-encrypted volume the disk passphrase already unlocks at boot, so the credential
+              is decryptable only on that one host and only after that one passphrase -- no TPM
+              involved, matching an estate that deliberately rejected TPM for LUKS itself. This
+              option has no opinion about HOW the referenced file was encrypted (it just names a
+              path); documented here because getting that flag wrong is the single most likely way
+              to reproduce the exact failure this comment describes.
+            '';
           };
         };
       }));
@@ -518,38 +707,183 @@ in
           `nixdesktop.want.polkitAgent` already knows this path (this repo's own
           `modules/nixos-backend.nix`, via `lib/nixos-roles.nix`'s `polkitAgents.<name>.command`;
           nixarch's Arch backend has the equivalent) -- wire it through from there rather than
-          hand-typing it, the same way you would for `keyring.command` below.
+          hand-typing it, the same way you would for `keyring.gnomeKeyring.command`/`keyring.oo7.
+          command` below.
         '';
       };
     };
 
+    # ── keyring: PROVIDER CHOICE, NOT A BARE COMMAND ────────────────────────────────────────────
+    # See the keyring assembly's own header comment above (by `keyringProviderCommand`) for the
+    # full account of why this moved from one `command` string to a provider choice, why that
+    # choice is two independent booleans rather than an enum, and the verified-not-assumed facts
+    # behind each provider's own `serviceType`/`restart`.
     keyring = {
       enable = lib.mkEnableOption "a secret-service (org.freedesktop.secrets) provider, run as a systemd user service";
-      command = lib.mkOption {
-        type = lib.types.str;
-        example = "gnome-keyring-daemon --start --components=secrets";
-        description = ''
-          Keyring daemon invocation -- same `lib/nixos-roles.nix`'s `keyrings.<name>.command`
-          pointer as `polkitAgent.command` above. Only ever set one provider: two racing for the
-          same D-Bus name is a confusing failure that presents as apps intermittently losing
-          their stored secrets.
 
-          DESIGN DECISION: rendered with `serviceType = "forking"` and `restart = "no"`, unlike
-          every other well-known component here. gnome-keyring-daemon -- the well-known
-          implementation of this role -- is a traditional double-forking UNIX daemon: the process
-          this unit execs parses its flags, forks the real daemon into the background, and exits
-          on its own, successfully, almost immediately. Under the default `serviceType = "simple"`
-          systemd ties the unit's active/inactive state strictly to that first process, so it would
-          go "inactive (dead)" seconds after a fully successful start -- correct process, wrong
-          unit state. "forking" is systemd's own documented mechanism for exactly this pattern:
-          without a PIDFile, it tracks whichever single process remains in the unit's cgroup once
-          the original one exits. And a bootstrap step either wins once or doesn't: unlike a bar or
-          a watcher, there is nothing to gain by retrying it in a loop, and something to lose (a
-          missing binary or an already-registered D-Bus name would otherwise restart-loop
-          indefinitely instead of failing once, visibly). If the binary in use runs in the
-          foreground instead of forking (check its own flags -- some builds accept a
-          `--foreground`-style option), set `nixdesktop.session.services.keyring.serviceType =
-          "simple";` to match.
+      # ── oo7: THE MODERN PATH, OPERATOR-MANDATED ───────────────────────────────────────────────
+      oo7 = {
+        enable = lib.mkEnableOption ''
+          oo7-server (`oo7-daemon`, nixpkgs `oo7-server`/Arch `extra/oo7`, both official, no AUR)
+          as this host's Secret Service provider. THE DECISION for any host that autologins with
+          no PAM auth phase (Design A -- see modules/launcher.nix's own header): gnome-keyring's
+          only autologin-compatible mode is a BLANK keyring password (secrets unencrypted at
+          rest); oo7 can stay genuinely encrypted under autologin instead, via `credential` below.
+          Mutually exclusive with `gnomeKeyring.enable` -- see `config.assertions`.
+
+          SECRETS ONLY, BY DESIGN, NOT A GAP THIS OPTION COULD CLOSE: oo7's own upstream repo ships
+          no PKCS#11 store and no ssh-agent -- unlike gnome-keyring-daemon, which CAN provide both
+          (though see `gnomeKeyring.command`'s own doc: this module has never actually asked it
+          to). A host that genuinely needs a PKCS#11 store or an ssh-agent needs a DIFFERENT,
+          separately-run component regardless of which keyring provider it picks here (p11-kit for
+          the former; `gpg-agent --enable-ssh-support`, or plain `ssh-agent`, for the latter) --
+          neither is modelled as a role by this module today, so wire it yourself via the generic
+          `services.<name>` mechanism if a host needs it.
+        '';
+
+        command = lib.mkOption {
+          type = lib.types.str;
+          example = lib.literalExpression ''"''${pkgs.oo7-server}/libexec/oo7-daemon"'';
+          description = ''
+            oo7-daemon invocation -- NO DEFAULT, deliberately, unlike `gnomeKeyring.command`
+            below. Confirmed by building the real package and listing its output
+            (`nix build nixpkgs#oo7-server` + `find $out -type f`): the binary installs to
+            `$out/libexec/oo7-daemon`, NOT `$out/bin`, so -- unlike gnome-keyring-daemon and
+            kwalletd6, which both land in `$out/bin` and resolve via a bare name on PATH -- a
+            bare `"oo7-daemon"` here would NOT resolve unless something else already put it on
+            PATH. Same `lib/nixos-roles.nix`'s `keyrings.<name>.command` pointer as
+            `polkitAgent.command`/`gnomeKeyring.command`: wire it through
+            `keyrings.oo7.command` for the real interpolated store path rather than hand-typing
+            one that will only work by accident.
+
+            NOT the wrapped `/run/wrappers/bin/oo7-daemon` path either, even though that is what
+            nixpkgs' OWN packaged unit points at (`share/systemd/user/oo7-daemon.service`,
+            `useWrappedDaemon = true` by default) -- see the keyring assembly's header comment for
+            why: that path only resolves on a host whose SYSTEM config also runs NixOS's own
+            `services.oo7.enable` (which supplies the `security.wrappers.oo7-daemon` CAP_IPC_LOCK
+            wrapper), a capability this home-manager module cannot reach. `keyrings.oo7.command`
+            in `lib/nixos-roles.nix` therefore points at the real, unwrapped `libexec` path, and
+            this option inherits that same limitation whenever set to anything else.
+          '';
+        };
+
+        # ── the credential-based unlock: THE REASON oo7 replaces gnome-keyring at all ───────────
+        credential = {
+          enable = lib.mkEnableOption ''
+            load the `oo7.keyring-encryption-password` systemd credential into this unit
+            (`LoadCredentialEncrypted=`, via the generic `loadCredentialEncrypted` mechanism --
+            see that option's own doc for the full proof and the `--user`/`--uid` scope gotcha it
+            uncovered), so oo7-daemon can unlock the session keyring with NO typed password even
+            though this session autologins. Requires `oo7.enable`; meaningless otherwise (nothing
+            reads it unless the oo7 branch of the assembly is the one active).
+          '';
+
+          name = lib.mkOption {
+            type = lib.types.str;
+            default = "oo7.keyring-encryption-password";
+            description = ''
+              The credential ID. NOT a free naming choice -- this is oo7-server's OWN contract,
+              confirmed two ways: its README ("the daemon will try to load a credential named
+              `oo7.keyring-encryption-password`") and the literal `ImportCredential=
+              oo7.keyring-encryption-password` line in its packaged 0.6.0 unit (see the keyring
+              assembly's header comment). Renaming it here produces a unit that loads a credential
+              oo7-daemon never looks for -- change this only if a future oo7 release renames its
+              own contract, and confirm against the new version's own source before doing so.
+            '';
+          };
+
+          path = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "/etc/credstore.encrypted/oo7.keyring-encryption-password";
+            description = ''
+              Where the USER-SCOPED encrypted blob lives on disk. Mandatory (build failure via
+              `config.assertions` if left `null`) once `credential.enable` is true -- there is no
+              sane default location this module could assume across hosts.
+
+              MUST be produced with `systemd-creds encrypt --user --uid=<uid> --with-key=host
+              <input> <this path>` -- NOT the plain `systemd-creds encrypt --with-key=host` form
+              (no `--user`/`--uid`) a first attempt reaches for. Proved live, not assumed: a blob
+              encrypted the plain way loaded into a `systemd-run --user` unit via this exact
+              directive failed with `Scope mismatch` / `Failed to set up credentials: Wrong medium
+              type`, exit 243/CREDENTIALS; re-encrypting the identical plaintext with `--user
+              --uid=` and changing nothing else made the identical unit work. `--with-key=host`,
+              never `--with-key=tpm2` -- the operator's own mandate rejects TPM for LUKS, and the
+              host key (`/var/lib/systemd/credential.secret`) already lives on the LUKS-encrypted
+              volume the disk passphrase unlocks at boot, so this credential is decryptable only
+              on that host and only after that passphrase, with no TPM anywhere in the chain.
+            '';
+          };
+        };
+      };
+
+      # ── gnome-keyring: THE PREVIOUS PROVIDER, KEPT SELECTABLE, NOT DELETED ────────────────────
+      gnomeKeyring = {
+        enable = lib.mkEnableOption ''
+          gnome-keyring-daemon as this host's Secret Service provider -- the previous default,
+          kept selectable for a host not yet migrated to oo7, or one that genuinely still needs
+          the PKCS#11/ssh-agent components gnome-keyring can ALSO provide (this module's own
+          `command` below still only ever asks it for `--components=secrets`, though -- see the
+          note under `command`). Mutually exclusive with `oo7.enable` -- see `config.assertions`.
+        '';
+
+        command = lib.mkOption {
+          type = lib.types.str;
+          default = "gnome-keyring-daemon --start --components=secrets";
+          description = ''
+            gnome-keyring-daemon invocation. Defaulted, unlike `oo7.command` above, because
+            `lib/nixos-roles.nix`'s own comment confirms it: gnome-keyring-daemon installs
+            straight to `$out/bin`, so a bare name resolved via PATH is correct as-is, with no
+            store-path interpolation required.
+
+            `--components=secrets` ONLY -- this module has NEVER asked gnome-keyring for its
+            PKCS#11 store or its ssh-agent (see `lib/nixos-roles.nix`'s own `keyrings.gnome-keyring`
+            comment: "this is the secret-service role, not the ssh-agent or pkcs11 ones"). That
+            means the "PKCS#11/ssh-agent" boundary mentioned throughout this option group was
+            already true of THIS module before oo7 ever entered the picture -- if a host actually
+            gets either from gnome-keyring today, it is coming from something OUTSIDE this
+            module's own rendering (a different invocation, `pam_gnome_keyring`'s own broader
+            activation, a distro default service), not from anything `keyring.gnomeKeyring.command`
+            has ever started. Worth confirming per-host before assuming there is nothing to lose
+            by switching to oo7 -- this module cannot see that from here.
+
+            DESIGN DECISION, UNCHANGED FROM BEFORE THIS OPTION GROUP EXISTED: rendered with
+            `serviceType = "forking"` and `restart = "no"` (see `keyringServiceType`/
+            `keyringRestart` above). gnome-keyring-daemon is a traditional double-forking UNIX
+            daemon: the process this unit execs parses its flags, forks the real daemon into the
+            background, and exits on its own, successfully, almost immediately. Under the default
+            `serviceType = "simple"` systemd ties the unit's active/inactive state strictly to
+            that first process, so it would go "inactive (dead)" seconds after a fully successful
+            start -- correct process, wrong unit state. "forking" is systemd's own documented
+            mechanism for exactly this pattern: without a PIDFile, it tracks whichever single
+            process remains in the unit's cgroup once the original one exits. And a bootstrap step
+            either wins once or doesn't: unlike a bar or a watcher, there is nothing to gain by
+            retrying it in a loop, and something to lose (a missing binary or an
+            already-registered D-Bus name would otherwise restart-loop indefinitely instead of
+            failing once, visibly).
+          '';
+        };
+      };
+
+      # ── ESCAPE HATCH, UNCHANGED IN SPIRIT, WIDENED IN TYPE ────────────────────────────────────
+      command = lib.mkOption {
+        type = lib.types.nullOr lib.types.str;
+        default = null;
+        example = "secret-tool-alternative-daemon --foreground";
+        description = ''
+          ESCAPE HATCH. A verbatim keyring daemon invocation, used as-is instead of whichever
+          provider's own command `oo7.enable`/`gnomeKeyring.enable` would otherwise select.
+          `null`, the default, means "use the enabled provider's own command" -- what almost every
+          consumer wants.
+
+          Before this option group existed, THIS was the only option (mandatory, no default) --
+          kept here, now optional, for a provider this module has no built-in entry for at all.
+          Setting it does NOT also change `serviceType`/`restart`: those still follow
+          `oo7.enable` (see `keyringServiceType`/`keyringRestart` above), on the reasoning that
+          enabling a provider block is a statement about WHICH DAEMON is actually running
+          (forking vs. not), independent of the exact string used to start it -- override
+          `nixdesktop.session.services.keyring.serviceType`/`.restart` directly (the same generic
+          escape hatch every well-known block documents) if that coupling is wrong for your case.
         '';
       };
     };
@@ -560,5 +894,42 @@ in
 
     systemd.user.services =
       lib.mapAttrs toSystemdUnit (lib.filterAttrs (_: svc: svc.enable) cfg.services);
+
+    # ── keyring provider assertions ──────────────────────────────────────────────────────────
+    assertions = [
+      {
+        # Checked unconditionally, independent of `keyring.enable` -- see the keyring assembly's
+        # header comment for why this had to become a real, catchable assertion rather than
+        # something an enum's own shape ruled out structurally: a consumer reaching past this
+        # option group into `nixdesktop.session.services.keyring` directly could otherwise still
+        # produce two competing daemons with nothing here to notice, and setting both booleans is
+        # never a legitimate state regardless of whether the umbrella `enable` happens to be on.
+        assertion = !(cfg.keyring.oo7.enable && cfg.keyring.gnomeKeyring.enable);
+        message = ''
+          nixdesktop.session.keyring: choose exactly one provider -- both `oo7.enable` and
+          `gnomeKeyring.enable` are true. Two Secret Service daemons racing for the same D-Bus
+          name (org.freedesktop.secrets) is a confusing, intermittent failure -- apps losing their
+          stored secrets depending on which one won the race -- never a working configuration.
+          Disable one.
+        '';
+      }
+      {
+        assertion = !(cfg.keyring.enable && effectiveKeyringCommand == null);
+        message = ''
+          nixdesktop.session.keyring.enable is true but nothing tells it what to run: neither
+          `oo7.enable` nor `gnomeKeyring.enable` is set, and `command` is null. Enable a provider,
+          or set `command` directly as the escape hatch.
+        '';
+      }
+      {
+        assertion = !(cfg.keyring.oo7.credential.enable && cfg.keyring.oo7.credential.path == null);
+        message = ''
+          nixdesktop.session.keyring.oo7.credential.enable is true but `credential.path` is null.
+          There is no sane default location for the encrypted credential blob across hosts -- set
+          it to wherever `systemd-creds encrypt --user --uid=<uid> --with-key=host` actually wrote
+          it (see that option's own doc for the full proof).
+        '';
+      }
+    ];
   };
 }

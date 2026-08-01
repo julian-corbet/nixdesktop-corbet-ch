@@ -104,12 +104,21 @@ in
     };
 
     keyring = lib.mkOption {
-      type = lib.types.nullOr (lib.types.enum [ "gnome-keyring" "kwallet" ]);
+      type = lib.types.nullOr (lib.types.enum [ "gnome-keyring" "kwallet" "oo7" ]);
       default = "gnome-keyring";
       description = ''
         Secret-service provider (`org.freedesktop.secrets`), or null for none. Only one may run:
         two providers racing for the same D-Bus name is a real and confusing failure mode.
         `kwallet` works without a Plasma session but needs its own explicit spawn wiring.
+
+        `oo7` is the modern path (this repo's own `home/session.nix`'s `nixdesktop.session.
+        keyring.oo7` option group has the full account, including the credential-based unlock
+        that makes it viable under autologin) — NOT the default here, deliberately: this option
+        only decides which package(s) `nixdesktop.nixosBackend` installs, a decision this generic
+        library repo has no fleet-specific opinion about, unlike a specific host's own config.
+        Picking `oo7` here does not by itself run anything — pair it with `nixdesktop.session.
+        keyring.oo7.enable = true;` in your own home-manager configuration, the same manual
+        wiring every other role here already asks for (see `keyring`'s sibling roles above).
       '';
     };
 

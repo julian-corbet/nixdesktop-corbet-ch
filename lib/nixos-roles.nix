@@ -67,11 +67,12 @@ rec {
     };
   };
 
-  # Both daemons here install their binary straight to $out/bin (confirmed by build + `find`, same
-  # as every other role), so — unlike the polkit agents above — a bare command resolved via PATH is
-  # correct and there is no store path to interpolate. Kept as `command` strings anyway, mirroring
-  # the Arch table's shape and for the same reason a future home-layer module would want it: the
-  # package and the spawn command are one fact.
+  # gnome-keyring and kwallet both install their binary straight to $out/bin (confirmed by build +
+  # `find`, same as every other role), so — unlike the polkit agents above — a bare command resolved
+  # via PATH is correct and there is no store path to interpolate. Kept as `command` strings anyway,
+  # mirroring the Arch table's shape and for the same reason a future home-layer module would want
+  # it: the package and the spawn command are one fact. oo7, added below, BREAKS that pattern — see
+  # its own comment for why it needs the polkit agents' string-interpolation treatment instead.
   keyrings = {
     gnome-keyring = {
       packages = [ pkgs.gnome-keyring ];
@@ -82,6 +83,35 @@ rec {
     kwallet = {
       packages = [ pkgs.kdePackages.kwallet ];
       command = "kwalletd6";
+    };
+
+    # oo7 -- THE DECISION (operator-mandated): the modern Secret Service provider, replacing
+    # gnome-keyring on any host that autologins with no PAM auth phase. See home/session.nix's own
+    # `nixdesktop.session.keyring` option group — specifically its "keyring provider, assembled
+    # HERE" header comment — for the full account of the credential-based autologin unlock this
+    # entry exists to support, and for every fact below, all confirmed live against the exact
+    # `nixpkgs#oo7-server` version (0.6.0) the operator's mandate itself names, not assumed from
+    # gnome-keyring's precedent two lines above.
+    oo7 = {
+      packages = [ pkgs.oo7-server ];
+      # UNLIKE gnome-keyring/kwallet above: `nix build nixpkgs#oo7-server` + `find $out -type f`
+      # shows the real binary at `$out/libexec/oo7-daemon`, NOT `$out/bin` — a bare "oo7-daemon"
+      # would NOT resolve via PATH. Interpolated like the `polkitAgents` table above, for the
+      # identical reason (see that table's own header comment).
+      #
+      # NOT `${pkgs.oo7-server}/run/wrappers/bin/oo7-daemon` — that is the path nixpkgs' OWN
+      # packaged unit (`share/systemd/user/oo7-daemon.service`, `useWrappedDaemon = true` by
+      # default — see `pkgs/by-name/oo/oo7-server/package.nix`) points its `ExecStart=` at, and it
+      # only resolves to a real binary on a host whose SYSTEM config also sets
+      # `security.wrappers.oo7-daemon` (CAP_IPC_LOCK, mlock so secrets can't be swapped to disk —
+      # see nixpkgs' own `nixos/modules/services/desktops/oo7.nix`, `services.oo7.enable`, read at
+      # the pinned 0.6.0-era checkout). home/session.nix's own keyring rendering has no `pkgs`, no
+      # root, and no route to `security.wrappers` — it cannot reproduce that wrapper regardless of
+      # what path this entry names, so pointing here at a wrapper that may not exist would be
+      # strictly worse than the true, working (if CAP_IPC_LOCK-less) libexec path below. The gap is
+      # flagged, not silently worked around — see `nixdesktop.session.keyring.oo7.command`'s own
+      # doc for the consumer-facing half of this same note.
+      command = "${pkgs.oo7-server}/libexec/oo7-daemon";
     };
   };
 
