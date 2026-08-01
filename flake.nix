@@ -253,6 +253,11 @@
           # providers enabled at once is a build failure, and the credential wiring
           # (`LoadCredentialEncrypted=`) appears iff `oo7.credential.enable` does.
           keyring = import ./checks/keyring.nix { inherit pkgs; };
+          # Same shape and reasoning as idle-assembly/keyring above -- proves the `patchbay`
+          # component instead: one unit (not a pair), Restart=always (not the class default,
+          # deliberately the opposite of keyring/lock-at-start's restart=no), and the
+          # StatusNotifierItem-host warning that fires iff `trayHostAvailable = false`.
+          patchbay = import ./checks/patchbay.nix { inherit pkgs; };
           monitor-identity = import ./checks/monitor-identity.nix { inherit pkgs; };
           layout-geometry = import ./checks/layout-geometry.nix { inherit pkgs; };
           # `sessionModule` is passed already closed over nixhost's `probeFact`/`collectProbes`,

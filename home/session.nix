@@ -64,7 +64,8 @@
 # ...) are convenience that populate it with commands for the components this desktop actually
 # has -- not a different code path. A consumer wanting some other component not listed below adds
 # it directly under `services`. The reserved names the convenience blocks use are: `bar`,
-# `notifications`, `osd`, `cliphist-text`, `cliphist-image`, `idle`, `polkit-agent`, `keyring`.
+# `notifications`, `osd`, `cliphist-text`, `cliphist-image`, `idle`, `polkit-agent`, `keyring`,
+# `patchbay`.
 #
 # Nothing here installs anything, same reasoning as every other module in this project: package
 # names and binary paths are platform-specific, so `command` is always a string the consumer (or a
@@ -315,6 +316,21 @@ let
       osd = lib.mkDefault {
         inherit (cfg.osd) command;
         description = "On-screen-display server";
+      };
+    })
+    // (lib.optionalAttrs cfg.patchbay.enable {
+      patchbay = lib.mkDefault {
+        inherit (cfg.patchbay) command;
+        description = "PipeWire patchbay, minimized to the tray (one click away, never fully gone -- see the option group's own header comment)";
+        # OPPOSITE of `keyring`/`lock-at-start`'s `restart = "no"`, deliberately -- see the
+        # `patchbay` option group's own header comment ("PROCESS SHAPE, MEASURED") for the full
+        # reasoning. Short version: this is the one component in this file with an easily-reached,
+        # ordinary "Quit" action (a menu item, a tray-context-menu entry) whose clean exit
+        # `Restart=on-failure` -- the class default, correct for `bar`/`notifications`/`osd` above,
+        # none of which expose a comparable quit -- would NOT bring back (exit 0 is not a
+        # "failure" by systemd's own definition), permanently killing the tray icon the whole
+        # "one click away" design depends on staying reachable for the rest of the session.
+        restart = "always";
       };
     })
     // (lib.optionalAttrs cfg.clipboardHistory.enable {
@@ -606,6 +622,209 @@ in
           OSD server command. Pairs with a compositor module's own `osd = "swayosd"`-style option
           (nixniri's `niri.osd`, for instance), which binds the volume/brightness/mic-mute keys
           to swayosd-client -- the client has nothing to talk to until this server is running.
+        '';
+      };
+    };
+
+    # ── patchbay: A LONG-RUNNING GUI PROCESS THAT LIVES IN THE TRAY, NOT A TRAY IMPLEMENTATION ────
+    #
+    # THE ASK, VERBATIM (operator, across several messages): "A patchbay like helvum is what I
+    # need... I want to move away from waybar. But I want it to live in the tray and then when I
+    # retool I want to be able to do so... different pipewire profiles or something would be
+    # nice... unobtrusive daily, but just one click away in case you need to reprogram or do
+    # recording." Three requirements follow directly: (1) invisible on an ordinary day, (2) one
+    # click from a full graph editor when rewiring or recording, (3) the tray dependency must
+    # survive a future compositor/shell swap (waybar today, whatever replaces it tomorrow) without
+    # this component caring which -- so it must not be built around waybar's own tray module.
+    #
+    # ── ONE UNIT, NOT TWO -- UNLIKE `cliphist-text`/`cliphist-image` ABOVE ─────────────────────
+    # cliphist split into two units because there are genuinely TWO independent OS processes with
+    # two independent failure domains (two separate `wl-paste --watch` invocations -- see that
+    # block's own comment). A patchbay minimized to the tray is the opposite shape: ONE process
+    # with two VISUAL states (a hidden window plus a live StatusNotifierItem registration, or a
+    # raised window) -- never two processes. Every tool in this category (a Qt/GTK graph editor
+    # with an optional start-hidden flag) registers its own tray icon from inside the same process
+    # that owns the window; there is no second binary to supervise. So this is ONE
+    # `services.<name>` entry, the same shape as `bar`/`notifications`/`osd` above, not a pair.
+    #
+    # ── PROCESS SHAPE, MEASURED ────────────────────────────────────────────────────────────────
+    # Type=simple -- the submodule's own default, left unset in `wellKnownServices` below rather
+    # than restated, same as `bar`/`notifications`/`osd`. Every tool in this category is an
+    # ordinary foreground GTK/Qt event-loop process: it never forks and exits the way
+    # gnome-keyring-daemon does (see this file's `keyring` assembly, above, for the one component
+    # here that genuinely needs `forking`). There is no double-fork to track, so the default is
+    # already correct and restating it would only be noise.
+    #
+    # Restart=always -- NOT the submodule's own `on-failure` default, and the OPPOSITE of
+    # `keyring`/`lock-at-start`'s `restart = "no"` above, deliberately. Those two are one-shot
+    # units whose CLEAN exit (code 0) is the intended, successful, terminal state -- a keyring
+    # daemon that finished bootstrapping, or a locker that exited because the human unlocked it,
+    # has WON, and restarting either would be actively wrong (see their own comments). A patchbay
+    # minimized to the tray has no equivalent "done" state: its entire value is being reachable
+    # with one click for the ENTIRE session, exactly like `bar`/`notifications`/`osd` above -- but
+    # unlike those three, a graph editor is a full application window with a completely ordinary,
+    # easily-reached Quit action (a menu item, a tray-context-menu entry) that a bar or notifier
+    # simply does not expose. That quit exits cleanly (code 0) -- exactly the exit code
+    # `Restart=on-failure` (the class default that already suffices for `bar`/`notifications`/
+    # `osd`, none of which offer a comparable one-click quit) does NOT restart on, by systemd's own
+    # documented definition of "failure". Left at the default here, one accidental "Quit" click
+    # would permanently kill both the process AND the tray icon the operator would otherwise click
+    # to bring it back -- the exact silent, unrecoverable gap the "one click away" design this
+    # component exists to satisfy cannot tolerate. `Restart=always` restarts regardless of exit
+    # code, so a clean voluntary quit comes back exactly like a crash does: the tray icon is never
+    # permanently gone for the rest of a session. The cost -- it can never be TRULY stopped except
+    # via `systemctl --user stop`, or disabling this option and re-switching -- is the correct
+    # trade for a component whose whole reason to exist is "always there to click".
+    #
+    # ── THE SNI-HOST DEPENDENCY, NAMED HONESTLY, NOT PRETENDED AWAY ────────────────────────────
+    # A tray icon is not free-floating pixels: the process above only ever REGISTERS itself as a
+    # StatusNotifierItem over D-Bus (the freedesktop/KDE StatusNotifierItem specification, the
+    # mechanism every "system tray" on Wayland actually uses -- there is no compositor-native tray
+    # protocol). Registering has nowhere to draw unless something else on the session implements
+    # the other half, a StatusNotifierHost -- on this estate that is waybar's own `tray` module
+    # today (see profiles/desktop.nix's `bar` option: "waybar ... has a real SNI tray"). With NO
+    # host running, the unit below is in every respect a perfectly healthy, running, non-crashing
+    # systemd service -- `systemctl --user status` shows it green -- and the operator has no way to
+    # reach it at all: no icon, no error, nothing. That is precisely the silent-failure class this
+    # whole repo exists to eliminate (see the file header above), and it cannot be solved by
+    # asserting "waybar is enabled": the operator's own stated intent is to move OFF waybar and
+    # onto some other shell later, and hard-coupling this component to one specific bar
+    # implementation would make it break the moment that migration happens -- the opposite of what
+    # was asked.
+    #
+    # So this module cannot know the answer (home-manager's `nixdesktop.session` and the NixOS/
+    # system-manager-plane `nixdesktop.desktop.bar` role that actually resolves an SNI host today,
+    # profiles/desktop.nix, are different module TREES, not reliably composed together in every
+    # consumer -- home-manager here is explicitly usable standalone too, per this repo's own
+    # README), and it does not pretend to. `trayHostAvailable`, below, is a fact the consumer
+    # states instead -- the same shape `nixdesktop.sessions.<name>.vt` (modules/session.nix)
+    # already uses for "a fact only the consumer's own host config can know". Left false, the
+    # difference shows up as a `config.warnings` entry, loud on every `home-manager switch` and
+    # never silent -- not a hard assertion, because running with no visible tray icon is a
+    # legitimate transitional state (the exact state the operator described moving through) rather
+    # than a misconfiguration this module should refuse to build.
+    #
+    # ── THE TOOL CHOICE, RESEARCHED, NOT ASSUMED (verified 2026-08-01) ────────────────────────
+    # This repo names no package (see the file header: "package names ... are platform-specific"),
+    # but it does record the one capability fact that should drive whichever tool a consumer picks,
+    # because getting this wrong produces a tool that LOOKS right and then cannot do what was
+    # asked. A mixer-shaped control (`pavucontrol`, a native volume mixer, `pactl`/`wpctl` used
+    # directly) shares one structural limit regardless of how polished its UI is: moving a stream
+    # to a sink is a METADATA assignment (`target.node`, one value -- the same operation `wpctl
+    # set-default` performs), which can only ever name ONE destination. It cannot express "this
+    # microphone feeds BOTH the recording software and the monitoring/voice-chat output at once" --
+    # exactly the "recording microphones and something" fan-out the operator asked for. A
+    # PATCHBAY-shaped tool (arbitrary port-to-port LINK creation -- dragging a cable between two
+    # dots) is structurally different: creating a second link out of one output port ADDS a
+    # connection rather than replacing the existing one, because link creation, unlike a metadata
+    # assignment, carries no "exactly one" constraint anywhere in PipeWire's own object model.
+    # Splitting one source to two sinks is therefore not a matter of which patchbay looks nicer --
+    # it is the one thing only a patchbay-shaped tool, never a mixer-shaped one, can do at all.
+    #
+    # Two well-known implementations of that shape were compared for this repo (checked live
+    # against both projects' own upstream repositories on 2026-08-01, not assumed from memory): one
+    # is written in Rust/GTK4 and was DROPPED from nixpkgs in March 2026 as upstream-unmaintained (a
+    # maintainer ping went unanswered; a dependency audit found an open RUSTSEC advisory in a
+    # transitive crate), then briefly reinstated in May 2026 alongside a single 0.6.2 release, with
+    # no further upstream commits since. The other, Qt/Widgets-based, remains in active day-to-day
+    # upstream development (a commit landed the day before this was verified) and additionally
+    # offers something neither the mixer class nor the less-active patchbay does: saving a
+    # connection arrangement to a file and reapplying it later, matched by stable port name. That
+    # second capability is the direct answer to "so different pipewire profiles or something would
+    # be nice" (see the disambiguation immediately below) -- a saved, reloadable ROUTING
+    # ARRANGEMENT is not a feature either the mixer class or PipeWire itself provides at all; it
+    # exists only inside whichever patchbay implementation bothers to persist one. This repo states
+    # the capability, not a name, so this comparison is worth re-running before picking -- current
+    # maintenance status is exactly the kind of fact that goes stale.
+    #
+    # ── "PIPEWIRE PROFILES", DISAMBIGUATED -- THIS ESTATE HAS ALREADY BEEN BITTEN BY THE OVERLAP ──
+    # The operator's own word, "profiles", names TWO things that share no code path, and only one
+    # of them is anything this component (or PipeWire/WirePlumber themselves) can address at all:
+    #
+    #   (1) A per-card ALSA profile -- what `wpctl set-profile` / `pactl set-card-profile` actually
+    #       changes (PipeWire's `EnumProfile`/`Profile` SPA params on a Device object): which of a
+    #       sound card's physical modes is active (a plain stereo output vs. a multi-port
+    #       "Pro Audio" mode, say). This is a REAL, native PipeWire/WirePlumber concept, but this
+    #       component has nothing to do with it -- it is a property of a card, set through a
+    #       completely different mechanism, and nothing here reads or writes it.
+    #
+    #   (2) A saved ROUTING ARRANGEMENT -- "my recording setup": the studio microphone feeding both
+    #       the interface's own monitor path AND the recording software at once. THIS DOES NOT
+    #       EXIST as a native object anywhere in PipeWire or WirePlumber -- there is no "scene", no
+    #       link-set, nothing a `wpctl`/`pactl` command could name. It exists ONLY as whatever a
+    #       patchbay implementation with save/restore support persists on disk, matched by port
+    #       name at reload time. THIS is the sense the operator meant, and it is real -- but it is
+    #       USER STATE the chosen tool owns, not something this module renders or could ever
+    #       render: a Nix option cannot declare "which cable is plugged into which dot today" any
+    #       more sensibly than it could declare today's clipboard contents. `command` below starts
+    #       the tool; what gets wired inside it, and any file it saves to remember that wiring, is
+    #       that tool's own business -- the same boundary `keyring`'s own `oo7`/`gnomeKeyring` split
+    #       draws between "which daemon runs" (this module's job) and "what secrets it holds"
+    #       (never this module's job, or any Nix module's).
+    patchbay = {
+      enable = lib.mkEnableOption ''
+        a PipeWire patchbay/graph-editor GUI, run as a systemd user service and left running for
+        the whole session so a tray click can always raise it -- see the header comment above this
+        option group for the full account of why this is ONE unit (not a pair, unlike
+        `clipboardHistory`), why its `restart` is deliberately the opposite of `keyring`/
+        `lock-at-start`'s "no", the real StatusNotifierItem-host dependency a tray icon has and why
+        this module cannot resolve it for you (`trayHostAvailable`, below), the researched
+        capability that should drive which tool you pick (`command`, below), and why "PipeWire
+        profile" means two unrelated things, only one of which this component can ever touch.
+      '';
+
+      command = lib.mkOption {
+        type = lib.types.str;
+        example = "your-chosen-patchbay --start-hidden";
+        description = ''
+          The patchbay invocation. NO DEFAULT, deliberately, unlike `bar`/`osd` above: this repo
+          measured a real, dated gap between the current maintenance state of the well-known
+          implementations of this capability (see the header comment's "THE TOOL CHOICE" section)
+          and declines to bake in today's winner as a silent default that would go stale the
+          moment that measurement changes -- pick one against the CAPABILITY checklist below, not
+          this option's own (deliberately non-specific) example.
+
+          The tool must be able to do TWO things a mixer-shaped app (pavucontrol, a native volume
+          mixer, `pactl`/`wpctl` used directly) structurally cannot: (1) create an arbitrary
+          port-to-port LINK rather than merely reassigning a stream's one destination, which is the
+          only way to express one source feeding two sinks at once (see the header comment for why
+          this is a structural difference, not a UI preference); and, for the "different pipewire
+          profiles" ask specifically, (2) save a connection arrangement and reapply it later,
+          matched by stable port name -- since no such saved arrangement exists anywhere in
+          PipeWire/WirePlumber itself (see the header comment's disambiguation of "profile").
+
+          Include whatever start-hidden/start-minimized flag your chosen tool offers, if it has
+          one, so the window does not flash visibly at every session start -- there is no universal
+          flag name across implementations for this module to supply on your behalf. Without one,
+          the tool still works (and the unit below is exactly as correct), it just draws a window
+          for a moment before you would have to minimize it by hand the first time.
+        '';
+      };
+
+      trayHostAvailable = lib.mkOption {
+        type = lib.types.bool;
+        example = true;
+        description = ''
+          Whether SOMETHING on this session already implements a StatusNotifierHost -- the D-Bus
+          role that actually draws a tray icon a StatusNotifierItem client (this component)
+          registers with. See the header comment's "THE SNI-HOST DEPENDENCY" section for the full
+          account of why this module cannot answer that question itself (this repo's own
+          `nixdesktop.desktop.bar` role, profiles/desktop.nix, resolves an SNI host today via
+          waybar's `tray` module -- but that is a different module TREE, not reliably composed
+          alongside this home-manager one, and coupling this component to waybar specifically is
+          exactly what the operator's own move-off-waybar intent rules out).
+
+          REQUIRED, WITH NO DEFAULT -- the same "guessing either way is wrong" reasoning
+          `nixdesktop.sessions.<name>.vt` (modules/session.nix) already uses for an equally
+          unknowable-from-here host fact. `true` when a host is running (waybar's tray module,
+          today, or whatever replaces it once the operator retools): the unit below renders exactly
+          as it would otherwise, no warning. `false` renders the identical unit -- the process
+          still runs, and still does real work over D-Bus/PipeWire regardless of whether anything
+          can currently draw its icon -- but adds a `config.warnings` entry, because a healthy,
+          running, `systemctl --user status`-green unit with a tray icon nobody can see is
+          precisely the silent-failure class this repo exists to eliminate, and staying quiet about
+          a state this module can see coming would be exactly that failure, just moved one file
+          over.
         '';
       };
     };
@@ -931,5 +1150,27 @@ in
         '';
       }
     ];
+
+    # ── patchbay SNI-host warning ─────────────────────────────────────────────────────────────
+    # See the `patchbay` option group's own header comment, "THE SNI-HOST DEPENDENCY", for why
+    # this is a WARNING and not an assertion: a patchbay with no confirmed tray host is a
+    # legitimate transitional state (exactly the state the operator described moving through while
+    # retooling off waybar), not a misconfiguration to refuse to build -- but it is exactly the
+    # silent-failure class this repo exists to eliminate if nothing says so out loud. `lib.optional`
+    # rather than an unconditional entry: `trayHostAvailable` is a required option with no default
+    # (see its own doc), so forcing it while `patchbay.enable` is false would throw "used but not
+    # defined" for a consumer who never touched this component at all -- `&&` short-circuits before
+    # that happens, the same laziness `effectiveKeyringCommand`'s own guards above rely on.
+    warnings = lib.optional (cfg.patchbay.enable && !cfg.patchbay.trayHostAvailable) ''
+      nixdesktop.session.patchbay is enabled with trayHostAvailable = false: nothing on this
+      session currently implements a StatusNotifierHost, so this unit's own StatusNotifierItem
+      registration has nowhere to draw -- it will run, healthy and reachable over D-Bus/PipeWire,
+      with no visible tray icon anywhere. See the `patchbay` option group's own header comment
+      ("THE SNI-HOST DEPENDENCY") for why this module cannot detect that fact for you. Enable a
+      host (this repo's own `nixdesktop.desktop.bar` role, profiles/desktop.nix -- waybar's own
+      `tray` module is one today) and set `trayHostAvailable = true`, or accept that this instance
+      is reachable only some other way (a compositor keybind that raises it by window class, for
+      instance) until one exists.
+    '';
   };
 }
