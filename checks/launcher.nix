@@ -120,6 +120,11 @@ let
   # doc describes.
   absoluteCompositorOverride = { nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll"; };
 
+  # Same escape hatch, for niri: gives it an already-absolute `command` so a virtualOutputs
+  # fixture below trips ONLY the capability assertion under test, never ALSO the unrelated
+  # unresolved-command one (niri's own built-in `command = "niri --session"` is not absolute).
+  niriAbsoluteOverride = { nixdesktop.launcher.compositors.niri.command = "/nix/store/fake-niri-path/bin/niri"; };
+
   seated = extra: {
     compositor = "scroll";
     user = "richc";
@@ -144,6 +149,42 @@ let
   # `command = "scroll"` (non-absolute) and `package = null`, which is exactly the unresolved shape
   # the new assertion exists to catch.
   unresolvedCommandCfg = evalWith (baseModules ++ [ { nixdesktop.sessions.desk = seated { }; } ]);
+
+  # ── VIRTUAL OUTPUTS: THE CAPABILITY BOUNDARY, PROVEN BOTH WAYS ────────────────────────────────
+  # niri's own built-in row declares `supportsVirtualOutputs = false` (measured fact, see
+  # `builtinCompositors`'s own comment) -- a session naming niri with `virtualOutputs != [ ]` must
+  # fail the build, naming niri, never silently producing a session with no display.
+  vo = [ { width = 1920; height = 1080; } ];
+
+  niriVirtualOutputsCfg = evalWith (baseModules ++ [
+    niriAbsoluteOverride
+    { nixdesktop.sessions.desk = seated { compositor = "niri"; virtualOutputs = vo; }; }
+  ]);
+
+  # Same compositor, same override, but NO virtualOutputs declared -- proves the assertion is
+  # keyed on `virtualOutputs != [ ]`, not on "this session merely names niri".
+  niriNoVirtualOutputsCfg = evalWith (baseModules ++ [
+    niriAbsoluteOverride
+    { nixdesktop.sessions.desk = seated { compositor = "niri"; }; }
+  ]);
+
+  # scroll's own built-in row declares `supportsVirtualOutputs = true` -- the estate's real
+  # fixture (compositor defaults to "scroll" via the `seated`/`headless` helpers above) must trip
+  # no such rejection at all.
+  scrollVirtualOutputsCfg = evalWith (baseModules ++ [
+    absoluteCompositorOverride
+    { nixdesktop.sessions.desk = seated { virtualOutputs = vo; }; }
+  ]);
+
+  # A consumer can WITHDRAW scroll's own built-in support by restating the field explicitly --
+  # proving the assertion actually reads `nixdesktop.launcher.compositors.<name>.
+  # supportsVirtualOutputs`, rather than special-casing the compositor NAME "scroll"/"niri"
+  # somewhere it never told us about.
+  scrollVirtualOutputsWithdrawnCfg = evalWith (baseModules ++ [
+    absoluteCompositorOverride
+    { nixdesktop.launcher.compositors.scroll.supportsVirtualOutputs = false; }
+    { nixdesktop.sessions.desk = seated { virtualOutputs = vo; }; }
+  ]);
 
   # Trips modules/monitors.nix-style raw-name detection (§8 assertion 10): a device NAME shaped
   # like the exact thing this design exists to remove, arriving from nixhost's claim exactly as it
@@ -267,6 +308,23 @@ let
 
     "a resolved compositor command (the estate's fixture, absolute) produces no such failure" =
       countMatching "does not start with an absolute path" (firedMessages seatedCfg) == 0;
+
+    # ── VIRTUAL OUTPUTS DECLARED ON A COMPOSITOR THAT CANNOT CREATE ONE FAILS LOUDLY ────────────
+    "a session naming niri with virtualOutputs declared is a build failure" =
+      countMatching "cannot create one" (firedMessages niriVirtualOutputsCfg) == 1;
+
+    "the niri-virtualOutputs failure names the session and the compositor" =
+      let m = lib.head (matching "cannot create one" (firedMessages niriVirtualOutputsCfg)); in
+      lib.hasInfix "nixdesktop.sessions.desk" m && lib.hasInfix ''compositor "niri"'' m;
+
+    "the same niri session with NO virtualOutputs declared trips no such rejection" =
+      countMatching "cannot create one" (firedMessages niriNoVirtualOutputsCfg) == 0;
+
+    "a session naming scroll (built-in supportsVirtualOutputs = true) with virtualOutputs declared produces no such failure" =
+      countMatching "cannot create one" (firedMessages scrollVirtualOutputsCfg) == 0;
+
+    "a consumer can explicitly withdraw scroll's own built-in support, and the assertion still fires" =
+      countMatching "cannot create one" (firedMessages scrollVirtualOutputsWithdrawnCfg) == 1;
 
     # ── A DEVICE NAME SHAPED LIKE THE THING THIS DESIGN FORBIDS ─────────────────────────────────
     # NB: the search string stops at "raw", not "raw device node" — the assertion message wraps

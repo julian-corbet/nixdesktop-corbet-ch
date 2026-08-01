@@ -111,6 +111,18 @@ let
     sessions.desk = seated { environment = "devhome"; };
   };
 
+  # A seated session that ALSO asks for two virtual outputs -- proving `virtualOutputs` is
+  # orthogonal to `delivery` right here at the module that owns both fields (see
+  # `renderer`'s own doc for why a seated session declaring this must not be forced to pixman).
+  devhomeWithVirtualOutputs = withNixhost {
+    inventory = estateInventory;
+    environments.devhome.resources.gpu = devhomeClaim;
+    sessions.desk = seated {
+      environment = "devhome";
+      virtualOutputs = [ { width = 1920; height = 1080; } { width = 2560; height = 1440; } ];
+    };
+  };
+
   ordering = withNixhost {
     inventory = { alpha = { }; omega = { }; zulu = { }; };
     environments.mixed.resources.gpu = {
@@ -182,6 +194,23 @@ let
     "without nixhost both lists are empty and nothing is claimed" =
       (sessionsOf noNixhost).remote.permittedDevices == [ ]
       && (sessionsOf noNixhost).remote.deniedDevices == [ ];
+
+    # ── virtualOutputs: DATA PASSTHROUGH, NO CAPABILITY OPINION AT THIS LAYER ────────────────
+    # This module declares no compositor mechanics (see its own header) -- the compositor
+    # CAPABILITY check lives in modules/launcher.nix (checks/launcher.nix proves that one). All
+    # this module owes is that the field exists, defaults to empty, and roundtrips in declaration
+    # order for BOTH delivery classes -- it is explicitly orthogonal to `delivery`.
+    "virtualOutputs defaults to an empty list" =
+      (sessionsOf devhome).desk.virtualOutputs == [ ];
+
+    "virtualOutputs roundtrips width/height in declaration order, on a seated session" =
+      (sessionsOf devhomeWithVirtualOutputs).desk.virtualOutputs == [
+        { width = 1920; height = 1080; }
+        { width = 2560; height = 1440; }
+      ];
+
+    "a seated session declaring virtualOutputs still passes the seated-device assertion (orthogonal fields)" =
+      countMatching "is seated but permits no device" (firedMessages devhomeWithVirtualOutputs) == 0;
 
     # The device set is the environment's to own. A consumer writing it here must fail, not win.
     "permittedDevices is readOnly" =

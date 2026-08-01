@@ -261,6 +261,56 @@ let
         '';
       };
 
+      virtualOutputs = mkOption {
+        type = types.listOf (types.submodule {
+          options = {
+            width = mkOption {
+              type = types.ints.positive;
+              example = 1920;
+              description = "Pixel width of this virtual output.";
+            };
+            height = mkOption {
+              type = types.ints.positive;
+              example = 1080;
+              description = "Pixel height of this virtual output.";
+            };
+          };
+        });
+        default = [ ];
+        example = lib.literalExpression ''[ { width = 1920; height = 1080; } ]'';
+        description = ''
+          Outputs this session needs that NO PHYSICAL PANEL BACKS -- how many, and at what
+          resolution. This is invariant 1b of the workstation-story design doc made concrete: an
+          agent identity "needs no speakers and no monitor, but it DOES need a display to render
+          into the moment it does anything browser-shaped, because a browser cannot be driven
+          without one." One list entry per output; `[ ]`, the default, is the ordinary case for
+          every session that only ever draws to real hardware.
+
+          MODELED AS PART OF THE SESSION, NOT AS A `layout` ENTRY. `nixdesktop.layouts` exists to
+          arrange NAMED, IDENTIFIABLE hardware (an EDID triple or a connector) in physical
+          POSITION relative to other panels -- see modules/layouts.nix's own header. A virtual
+          output has neither: no EDID, no connector, no position to overlap-check against a real
+          screen, and no identity that could roam between hosts the way a `nixdesktop.monitors`
+          entry does. It belongs to whichever session asked for it, exactly the way `renderer` or
+          `environment` do -- not to a layout describing a desk.
+
+          ORTHOGONAL TO `delivery`, DELIBERATELY -- allowed on `"headless"` AND `"seated"` alike.
+          The obvious case is headless (an agent with no seat at all still needs somewhere to
+          draw), but a seated workstation session asking for an EXTRA output nothing physical
+          backs (to hand an agent's browser a place to render alongside the human's own screen) is
+          exactly as legitimate, and forbidding it here would be modeling less than the compositor
+          can actually do -- see `renderer`'s own doc below for why this does not reopen the
+          headless render-node trap on a seated session.
+
+          COMPOSITOR SUPPORT IS A REAL, ASSERTED CAPABILITY BOUNDARY, enforced in
+          `nixdesktop.launcher` (`nixdesktop.launcher.compositors.<name>.supportsVirtualOutputs`),
+          NEVER HERE: this module declares no compositor mechanics, the same way it declares no
+          device list -- see this file's header. A session naming a compositor that cannot create
+          one is a BUILD FAILURE naming the compositor, not a silent no-op: the alternative is an
+          agent identity with no display and no error saying why.
+        '';
+      };
+
       renderer = mkOption {
         type = types.enum [ "auto" "gl" "vulkan" "pixman" ];
         default = "auto";
@@ -279,6 +329,20 @@ let
           with a render node, and `"pixman"` is right on one without -- evdi's `drm_driver` never
           sets `DRIVER_RENDER`, so an evdi device can NEVER have a render node; that is a
           compile-time property of the driver, true on every host, not a configuration.
+
+          ⚠ A SEATED SESSION THAT ALSO DECLARES `virtualOutputs` DOES NOT REOPEN THIS TRAP, AND
+          MUST NOT BE FORCED TO `"pixman"` ON THAT ACCOUNT -- a temptation worth naming explicitly
+          so nobody "fixes" this later by widening the headless-only assertion below. The renderer
+          is a property of the COMPOSITOR PROCESS, shared by every output it drives, physical or
+          virtual: a wlroots-multi-backend compositor (scroll) already attaches a secondary
+          headless backend ALONGSIDE its DRM one on every session it runs, seated or headless
+          alike (see nixscroll's own `home/scroll.nix` for the measured source citation), so a
+          virtual output on a seated session rides the SAME renderer this option already resolved
+          for that session's real device -- `"auto"` where that device has a render node,
+          `"pixman"` where it does not, exactly as the paragraph above already states. There is no
+          second renderer to get wrong per output, and forcing pixman here unconditionally would
+          needlessly discard GPU-accelerated rendering for the WHOLE session, virtual output and
+          real one alike, on a card that has a perfectly good render node.
         '';
       };
 

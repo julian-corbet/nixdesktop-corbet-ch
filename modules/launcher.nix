@@ -237,9 +237,26 @@ let
   # other field back at the SUBMODULE's own bare default.) So the built-in rows are resolved by
   # THIS FILE's OWN CODE instead, per field, in `compositorEntry` below — never through the module
   # system's priority machinery, which cannot express "fall through per field" for this shape.
+  # `supportsVirtualOutputs` per row is a MEASURED fact about each compositor, not a placeholder:
+  #
+  #   scroll = true  -- scroll inherits sway's `wlr_backend_autocreate`, which unconditionally
+  #     wraps every backend selection in a `wlr_multi_backend` AND unconditionally attaches a
+  #     SECOND, headless backend alongside whichever primary one was selected (`sway/server.c`
+  #     `server_init()`, confirmed against the real dawsers/scroll source) -- seated or headless
+  #     alike. `create_output`'s own `sway_assert(wlr_backend_is_multi(server.backend))` therefore
+  #     never trips, and a virtual output is always reachable through that already-open backend.
+  #     See nixscroll's `home/scroll.nix` for the runtime-command translation this capability
+  #     backs, and its own comment for the exact numbering offset scroll's exact same startup path
+  #     forces on the result.
+  #
+  #   niri = false   -- niri 26.04 has NO virtual-output mechanism of any kind; upstream tracks it
+  #     as a design-stage feature (workstation-story design doc, established fact, not re-derived
+  #     here). There is no lever this repo -- or any translator sitting under it -- could pull, so
+  #     a session naming niri with `virtualOutputs != [ ]` must fail the build (see the assertion
+  #     below) rather than silently producing a session with no display and no error.
   builtinCompositors = {
-    scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = null; };
-    niri = { command = "niri --session"; env = [ ]; package = null; };
+    scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = null; supportsVirtualOutputs = true; };
+    niri = { command = "niri --session"; env = [ ]; package = null; supportsVirtualOutputs = false; };
   };
 
   # Every name either table declares -- what "known" means for the assertion below. A name in
@@ -271,6 +288,7 @@ let
       command = pick "command" "";
       env = pick "env" [ ];
       package = pick "package" null;
+      supportsVirtualOutputs = pick "supportsVirtualOutputs" false;
     };
 
   # ── ExecStart MUST BE ABSOLUTE — systemd never consults $PATH for it ───────────────────────────
@@ -559,6 +577,32 @@ in
               touched `env` at all, fall through to the built-in row's own value".
             '';
           };
+
+          supportsVirtualOutputs = mkOption {
+            type = types.nullOr types.bool;
+            default = null;
+            example = true;
+            description = ''
+              Whether this compositor can create an output that no physical panel backs, at
+              runtime, for a session that declares `nixdesktop.sessions.<name>.virtualOutputs`.
+
+              `null` by default — NOT `false` — for the identical reason `command`'s default is
+              `null` and not `""` (see that option's own doc): `compositorEntry`'s per-field
+              fallback (a consumer's own value wins, the built-in row's wins only when NEITHER
+              side ever set the field) needs to tell "this definition never touched this field"
+              apart from "this definition deliberately restated `false`", and a bare `false`
+              default would make the two indistinguishable, silently discarding scroll's own
+              built-in `true` the moment a consumer set even one OTHER field of that entry.
+
+              `scroll` and `niri` already resolve out of the box (see `builtinCompositors`, above
+              this option in the source, for the measured fact behind each of their two values) --
+              a NEW compositor states its own capability here, the same way it states its own
+              `command`. A session naming a compositor that declares no support (the final
+              fallback, when neither a consumer nor a built-in row ever set this field, is
+              `false`) is a build failure the moment it also declares `virtualOutputs` -- see the
+              assertion below -- not a session with no display and no error saying why.
+            '';
+          };
         };
       });
       default = { };
@@ -633,6 +677,41 @@ in
             '';
           })
         (lib.filterAttrs (_: s: lib.elem s.compositor declaredCompositorNames) enabledSessions)
+
+      # ── VIRTUAL OUTPUTS DECLARED ON A COMPOSITOR THAT CANNOT CREATE ONE ─────────────────────
+      # Only for sessions naming a compositor the table above DOES declare -- same scoping as the
+      # unresolvable-command check just above, for the same reason: an unknown compositor already
+      # fails, once, higher up, and checking a capability of a compositor that does not resolve at
+      # all would just be a second, confusing error about the identical typo.
+      #
+      # WHY THIS HAS TO BE A HARD FAILURE, NOT A WARNING. `nixdesktop.sessions.<name>.
+      # virtualOutputs` exists because an agent identity with no seat still needs somewhere to
+      # render a browser into (see modules/session.nix's own doc on that option, and the
+      # workstation-story design doc's invariant 1b) -- so a session that declares one and gets no
+      # error is not a cosmetic gap, it is an identity with no display, discovered only when
+      # whatever was meant to draw into it silently never appears anywhere. That is exactly the
+      # failure class `permittedDevices == [ ]` already refuses to let a seated session reach
+      # silently, a few assertions up -- this is the same shape, for a different capability.
+      ++ lib.mapAttrsToList
+        (name: s: {
+          assertion = false;
+          message = ''
+            nixdesktop.sessions.${name} declares ${toString (lib.length s.virtualOutputs)}
+            virtualOutputs, but compositor "${s.compositor}" cannot create one
+            (nixdesktop.launcher.compositors."${s.compositor}".supportsVirtualOutputs is not
+            `true`). A virtual output is a structural requirement for a session with no physical
+            panel behind it -- see nixdesktop.sessions.<name>.virtualOutputs's own doc -- and a
+            compositor that cannot provide one must fail loudly, naming itself, rather than
+            leaving the session with no display and no error saying why. Either run this session
+            on a compositor that supports virtual outputs (scroll does, out of the box), or set
+            nixdesktop.launcher.compositors."${s.compositor}".supportsVirtualOutputs = true
+            yourself, if a version of "${s.compositor}" newer than this repo knows about has
+            gained the capability.
+          '';
+        })
+        (lib.filterAttrs
+          (_: s: s.virtualOutputs != [ ] && !(compositorEntry s.compositor).supportsVirtualOutputs)
+          (lib.filterAttrs (_: s: lib.elem s.compositor declaredCompositorNames) enabledSessions))
 
       # ── A DEVICE NAME SHAPED LIKE THE THING THIS WHOLE DESIGN FORBIDS ───────────────────────
       # See design doc §8, assertion 10: cardN/renderDN/major:minor are all exactly as unstable as
