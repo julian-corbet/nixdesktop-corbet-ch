@@ -8,7 +8,13 @@
 # `Environment=` is VT-AWARE in both directions (`XDG_VTNR` present iff `vt != null`); and the
 # resolved `WLR_DRM_DEVICES` it exports is built from nixgpu's colon-FREE `cardNamePath`, never the
 # colon-BEARING `cardPath` — the entire reason `cardNamePath` exists at all (wlroots'
-# `strtok_r`-based parser, see modules/launcher.nix's own header for the full account).
+# `strtok_r`-based parser, see modules/launcher.nix's own header for the full account); and
+# `permittedDevicePaths` — the hand-stated escape hatch for a device class no GPU inventory owns
+# (today: sound) — is appended to `DeviceAllow=` verbatim, LAST (after the static tty/input floor
+# and the derived DRM paths, so a rendered unit reads as "everything after the DRM lines was asked
+# for by hand" — see modules/session.nix's own doc and modules/launcher.nix's `deviceFenceFor`),
+# changes nothing when left at its default `[ ]`, is mirrored identically onto the read-only
+# `nixdesktop.launcher.deviceFence`, and never loosens `DevicePolicy` off `"closed"`.
 #
 # FOUR LAYERS, DELIBERATELY, NOT ONE OR TWO. modules/launcher.nix is now curried on `plane`
 # ("nixos" | "system-manager" — see its own header for the full account of what system-manager
@@ -177,6 +183,16 @@ let
   # the VT normally here). This is the estate's OTHER real, live case (devhome), not a synthetic one.
   vtBackedCfg = evalWith (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { vt = 1; }; } ]);
 
+  # ── permittedDevicePaths: A HOST-STATED PATH FOR A DEVICE CLASS NO INVENTORY OWNS ────────────
+  # A by-path ALSA node -- the estate's own worked example (modules/session.nix's own doc, and the
+  # commit that introduced this option) -- appended on top of the estate's real `devhome` fixture,
+  # so this proves the append composes with a real GPU claim rather than standing in for one.
+  sndPath = "/dev/snd/by-path/pci-0000:0c:00.4";
+  devicePathsCfg = evalWith (baseModules ++ [
+    absoluteCompositorOverride
+    { nixdesktop.sessions.desk = seated { permittedDevicePaths = [ sndPath ]; }; }
+  ]);
+
   # ── GROUP MEMBERSHIP, THE THREE STATES ────────────────────────────────────────────────────────
   # `seatedCfg` itself is the THIRD state (no `users.users.richc` entry at all -- an externally-
   # managed identity) and needs no separate fixture; the assertion must be silent for it precisely
@@ -255,9 +271,20 @@ let
     lib.any (d: lib.hasInfix ("card" + d) text) digits
     || lib.any (d: lib.hasInfix ("renderD" + d) text) digits;
 
+  # `DeviceAllow=`, IN RENDERED-UNIT ORDER -- proves `permittedDevicePaths` lands LAST against the
+  # literal unit text, not just the pre-render Nix list. `attrsToSection`
+  # (nixos/lib/systemd-lib.nix) renders a list-valued `serviceConfig` field as one `KEY=value` line
+  # PER ENTRY, via a plain `map` over that entry's own list -- so splitting the rendered text on
+  # newlines and filtering for the `DeviceAllow=` prefix recovers the exact declaration order, on
+  # both the real NixOS unit text and the real system-manager one (system-manager's own
+  # `nix/modules/systemd.nix` renders the identical shape -- the REAL SYSTEM-MANAGER checks already
+  # below match single `DeviceAllow=... rw\n` lines on that assumption).
+  deviceAllowLines = text: lib.filter (l: lib.hasPrefix "DeviceAllow=" l) (lib.splitString "\n" text);
+
   deskUnit = seatedCfg.systemd.services."nixdesktop-desk";
   vtBackedUnit = vtBackedCfg.systemd.services."nixdesktop-desk";
   remoteUnit = headlessCfg.systemd.user.services."nixdesktop-remote";
+  devicePathsUnit = devicePathsCfg.systemd.services."nixdesktop-desk";
 
   lightweightResults = {
     # ── SEATED IS A SYSTEM UNIT, NEVER A --user ONE ─────────────────────────────────────────────
@@ -313,6 +340,31 @@ let
 
     "DeviceAllow is entirely STATIC -- no ExecStartPre exists on the seated unit any more" =
       !(deskUnit.serviceConfig ? ExecStartPre);
+
+    # ── permittedDevicePaths: HAND-WRITTEN PATHS, APPENDED LAST -- see modules/session.nix's own
+    # doc and modules/launcher.nix's `deviceFenceFor` comment for why the ordering is deliberate: a
+    # rendered unit should read as "everything after the DRM lines was asked for by hand".
+    "a declared permittedDevicePaths entry lands in DeviceAllow with a trailing ' rw'" =
+      lib.elem "${sndPath} rw" devicePathsUnit.serviceConfig.DeviceAllow;
+
+    "permittedDevicePaths entries land LAST, after the static tty/input floor and the derived DRM paths" =
+      devicePathsUnit.serviceConfig.DeviceAllow == [
+        "/dev/ptmx rw" "/dev/tty rw" "char-tty rw" "char-pts rw" "char-input rw"
+        "/dev/dri/by-path/pci-0000:03:00.0-card rw"
+        "${sndPath} rw"
+      ];
+
+    "a session declaring no permittedDevicePaths (the default) renders EXACTLY the pre-feature DeviceAllow, with nothing appended" =
+      deskUnit.serviceConfig.DeviceAllow == [
+        "/dev/ptmx rw" "/dev/tty rw" "char-tty rw" "char-pts rw" "char-input rw"
+        "/dev/dri/by-path/pci-0000:03:00.0-card rw"
+      ];
+
+    "nixdesktop.launcher.deviceFence mirrors permittedDevicePaths identically to the unit, single-sourced" =
+      devicePathsCfg.nixdesktop.launcher.deviceFence.desk.deviceAllow == devicePathsUnit.serviceConfig.DeviceAllow;
+
+    "DevicePolicy stays closed even when permittedDevicePaths widens the allowlist" =
+      devicePathsUnit.serviceConfig.DevicePolicy == "closed";
 
     # ── THE DEVICE FENCE IS MIRRORED READ-ONLY, IDENTICALLY TO THE UNIT ─────────────────────────
     "nixdesktop.launcher.deviceFence mirrors the unit's own DevicePolicy=/DeviceAllow= exactly" =
@@ -434,6 +486,14 @@ let
   seatedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { }; } ]);
   headlessUnsupportedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.remote = headless { }; } ]);
 
+  # permittedDevicePaths, same fixture shape as the lightweight NixOS layer above (`sndPath`,
+  # `devicePathsCfg`) but composed against the system-manager plane's own stub.
+  devicePathsCfgSm = evalWithSystemManager (baseModules ++ [
+    absoluteCompositorOverride
+    { nixdesktop.sessions.desk = seated { permittedDevicePaths = [ sndPath ]; }; }
+  ]);
+  devicePathsUnitSm = devicePathsCfgSm.systemd.services."nixdesktop-desk";
+
   deskUnitSm = seatedCfgSm.systemd.services."nixdesktop-desk";
 
   # The core structural proof: a SEATED-ONLY config (zero headless sessions anywhere in the
@@ -461,6 +521,20 @@ let
 
     "SM: deviceFence mirrors the unit identically to the NixOS plane too" =
       seatedCfgSm.nixdesktop.launcher.deviceFence.desk.deviceAllow == deskUnitSm.serviceConfig.DeviceAllow;
+
+    # ── permittedDevicePaths ON THE SYSTEM-MANAGER PLANE, IDENTICALLY ─────────────────────────
+    "SM: permittedDevicePaths entries land LAST, after the static floor and the derived DRM paths" =
+      devicePathsUnitSm.serviceConfig.DeviceAllow == [
+        "/dev/ptmx rw" "/dev/tty rw" "char-tty rw" "char-pts rw" "char-input rw"
+        "/dev/dri/by-path/pci-0000:03:00.0-card rw"
+        "${sndPath} rw"
+      ];
+
+    "SM: deviceFence mirrors permittedDevicePaths identically to the unit too" =
+      devicePathsCfgSm.nixdesktop.launcher.deviceFence.desk.deviceAllow == devicePathsUnitSm.serviceConfig.DeviceAllow;
+
+    "SM: DevicePolicy stays closed even when permittedDevicePaths widens the allowlist" =
+      devicePathsUnitSm.serviceConfig.DevicePolicy == "closed";
 
     "SM: a seated-only config (no headless sessions at all) forces cleanly against a stub with NO systemd.user.services declared" =
       seatedOnlySmForcesCleanly;
@@ -508,7 +582,12 @@ let
     ];
   };
 
-  realSystemManagerSeated = realSystemManagerFor { nixdesktop.sessions.desk = seated { }; };
+  # `permittedDevicePaths` is on this fixture too, deliberately -- see `deviceAllowLines`'s own
+  # comment: the ordering proof below needs the REAL rendered unit text, not the lightweight
+  # layers' pre-render Nix list, and the estate's real `devhome` claim (a genuine DRM device
+  # already permitted) is what proves the append composes with a real GPU claim rather than
+  # standing in for one.
+  realSystemManagerSeated = realSystemManagerFor { nixdesktop.sessions.desk = seated { permittedDevicePaths = [ sndPath ]; }; };
 
   # `deepSeq` here is CORRECT for the negative (fails-outright) proof, and would be WRONG for a
   # positive one -- the two are not symmetric. `makeSystemConfig` returns `returnIfNoAssertions
@@ -570,6 +649,17 @@ let
     "REAL SYSTEM-MANAGER: no literal card or render-node number anywhere in the rendered unit" =
       !(containsLiteralCardNumber deskUnitTextSm);
 
+    # ── permittedDevicePaths, AGAINST THE REAL RENDERED UNIT TEXT ───────────────────────────────
+    "REAL SYSTEM-MANAGER: the rendered seated unit's DeviceAllow carries the permittedDevicePaths entry with a trailing rw" =
+      lib.hasInfix "DeviceAllow=${sndPath} rw\n" deskUnitTextSm;
+
+    "REAL SYSTEM-MANAGER: permittedDevicePaths' entry is the LAST DeviceAllow= line, after the static floor and the derived DRM card line" =
+      lib.last (deviceAllowLines deskUnitTextSm) == "DeviceAllow=${sndPath} rw";
+
+    "REAL SYSTEM-MANAGER: DevicePolicy stays closed even with permittedDevicePaths declared" =
+      lib.hasInfix "DevicePolicy=closed\n" deskUnitTextSm
+      && !(lib.hasInfix "DevicePolicy=strict" deskUnitTextSm);
+
     "REAL SYSTEM-MANAGER: a headless session on this plane fails the WHOLE BUILD outright (makeSystemConfig throws)" =
       realSystemManagerFails { nixdesktop.sessions.remote = headless { }; };
 
@@ -600,7 +690,9 @@ let
       launcherModuleNixos
       {
         nixhost = { resources.gpu = estateInventory; environments.devhome.resources.gpu = devhomeClaim; };
-        nixdesktop.sessions.desk = seated { vt = 1; };
+        # `permittedDevicePaths` rides the same VT-backed fixture -- see `deviceAllowLines`'s own
+        # comment for why the ordering proof below needs this REAL rendered text.
+        nixdesktop.sessions.desk = seated { vt = 1; permittedDevicePaths = [ sndPath ]; };
         nixdesktop.sessions.remote = headless { };
         nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll";
         system.stateVersion = "24.11";
@@ -649,6 +741,17 @@ let
 
     "REAL SYSTEM: the rendered seated unit contains no literal card or render-node number anywhere" =
       !(containsLiteralCardNumber deskUnitText);
+
+    # ── permittedDevicePaths, AGAINST THE REAL RENDERED UNIT TEXT ───────────────────────────────
+    "REAL SYSTEM: the rendered seated unit's DeviceAllow carries the permittedDevicePaths entry with a trailing rw" =
+      lib.hasInfix "DeviceAllow=${sndPath} rw\n" deskUnitText;
+
+    "REAL SYSTEM: permittedDevicePaths' entry is the LAST DeviceAllow= line, after the static floor and the derived DRM card line" =
+      lib.last (deviceAllowLines deskUnitText) == "DeviceAllow=${sndPath} rw";
+
+    "REAL SYSTEM: DevicePolicy stays closed even with permittedDevicePaths declared" =
+      lib.hasInfix "DevicePolicy=closed\n" deskUnitText
+      && !(lib.hasInfix "DevicePolicy=strict" deskUnitText);
 
     # ── THIS FIXTURE IS VT-BACKED (vt = 1) -- so XDG_VTNR must be present, real system tree ──────
     "REAL SYSTEM: the rendered seated unit (VT-backed, vt = 1) carries XDG_VTNR=1" =
