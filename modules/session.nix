@@ -22,6 +22,17 @@
 # libseat at all. So `delivery` is the discriminator this whole module is organised around, and
 # every assertion below is downstream of it.
 #
+# ── A SEATED SESSION MAY OR MAY NOT HAVE A VT, AND THAT IS A SECOND, INDEPENDENT HARDWARE FACT ──
+#
+# There are TWO delivery classes above, not three. The arch LXC is not a special third class -- it
+# is an ordinary SEATED session whose seat happens to have no VT. Verified live: `loginctl` inside
+# the container reports a real `seat0` and a genuine `class=user` session sitting on it (an earlier
+# note claiming containers have no seat at all was WRONG) -- but `/dev/tty0` does not exist there
+# at all (`/dev/console` does, and it is a pty, not a VT). `vt`, below, is what turns that into a
+# first-class, asserted fact instead of something a consumer has to already know before they can
+# explain why their cursor is dead: see its own doc for the two shapes, and `seatdVtBound`/
+# `requiredGroups` for the concrete consequence each one carries downstream.
+#
 # ── THE DEVICE SET IS NOT DECLARED HERE, AND THAT IS THE POINT ───────────────────────────────
 #
 # A session names an `environment`; which devices that environment may touch is already declared,
@@ -200,8 +211,10 @@ let
           `ActiveSession`. The consumer must run it as a SYSTEM unit with `PAMName=` + `User=`; a
           `--user` unit can never be seated, because `sd_pid_get_session()` requires the process's
           own cgroup path to contain `session-<N>.scope` and a user manager's does not -- no
-          exported `XDG_SESSION_ID` can fake that. A session with no seat is also why a polkit
-          agent silently fails to register.
+          exported `XDG_SESSION_ID` can fake that. That unit is an AUTOLOGIN, deliberately, never a
+          greeter -- see `nixdesktop.launcher`'s own header, "DESIGN A", for why a greeter is
+          exactly one password too many on this estate. A session with no seat is also why a
+          polkit agent silently fails to register.
 
           `"headless"` -- no output, no seat, no DRM device; reached over wayvnc/waypipe/RDP. This
           is the class that scales, and it is the same mechanism as "a full session in a browser".
@@ -227,6 +240,71 @@ let
           graphics device and NOTHING else: `seat_can_graphical()` is literally
           `seat_has_master_device()` -- there is no input-device check anywhere in that path, so a
           seat with a card and no dedicated keyboard is fully graphical-capable.
+        '';
+      };
+
+      vt = mkOption {
+        type = types.nullOr types.ints.positive;
+        default = null;
+        example = 1;
+        description = ''
+          MEANINGLESS when `delivery = "headless"` -- asserted null there, below, for the same
+          reason `seat` above is left at its ordinary default rather than made to mean something
+          extra: a session with no seat has no VT to speak of either.
+
+          For a seated session, this is the fact that actually distinguishes the two shapes a seat
+          on this estate can take -- a HARDWARE fact, never a style choice:
+
+          A NUMBER (the laptop; devhome on the server, which owns VT 1) means the seat is
+          VT-BACKED: `loginctl`'s ordinary mechanics apply, seatd follows VT-switch ioctls, and
+          logind's active-session ACL (`uaccess`) is what grants device access to whoever is
+          active on that VT. `seatdVtBound`/`requiredGroups` below are both irrelevant here.
+
+          `null` (the default, and the arch LXC's only honest answer) means the seat is REAL but
+          has NO VT to be backed by -- see this file's header for the measured `loginctl`/
+          `/dev/tty0` facts behind that. A VT-bound seatd never activates a session with nothing to
+          switch to, and the compositor's libinput backend then times out with "couldn't create
+          backend" and a permanently dead cursor -- fixed by `SEATD_VTBOUND=0`, which is exactly
+          why `seatdVtBound` exists below rather than leaving every consumer to re-derive `vt ==
+          null` for itself. `nixdesktop.launcher` reads this same fact to decide whether its
+          generated unit's `Environment=` may state `XDG_VTNR` at all -- see that module's own
+          header, "THE VT FACT", for the two measured failures (one per direction) that make
+          getting this wrong a real, live outcome rather than a theoretical one.
+        '';
+      };
+
+      seatdVtBound = mkOption {
+        type = types.bool;
+        readOnly = true;
+        description = ''
+          READ-ONLY, derived: `vt != null`. `false` is the signal `nixdesktop.launcher`'s generated
+          wrapper reads to decide it MUST export `SEATD_VTBOUND=0` -- see `vt`'s own doc for the
+          measured failure ("couldn't create backend", a dead cursor) that fixes. Exposed as its
+          own named fact, rather than leaving every downstream consumer to re-derive `vt == null`
+          for itself, for the identical reason `permittedDevices`/`deniedDevices` are: one true
+          statement about this session, computed once, read wherever it is needed.
+        '';
+      };
+
+      requiredGroups = mkOption {
+        type = types.listOf types.str;
+        readOnly = true;
+        description = ''
+          READ-ONLY, derived: `[ "input" "render" "seat" "video" ]` (alphabetical, same determinism
+          reason `permittedDevices` is ordered) for a seated session with `vt == null`; `[ ]` for
+          every other session, seated-and-VT-backed or headless alike.
+
+          WHY THIS EXISTS. A VT-backed seated session gets its device access from logind's own
+          `uaccess` ACL, applied to whoever is active on that VT -- group membership is not the
+          mechanism there at all. A seat with NO VT has no VT to be active ON, so `uaccess` never
+          fires either, and GROUP MEMBERSHIP IS THE ONLY REMAINING PATH granting this session's
+          user access to `/dev/dri/*` (`video`/`render`), its input devices (`input`), and a
+          non-VT-bound seatd's own listening socket (`seat`) at all. `nixdesktop.launcher` asserts
+          these are actually present in `users.users.<name>.extraGroups` for a NixOS/system-
+          manager-managed user (see that module's own assertion) precisely because this is the one
+          failure mode with no error message pointing at it: a group silently missing from
+          `extraGroups` does not fail this session to start, it fails it to draw anything, and both
+          libinput and the DRM backend report nothing more specific than "couldn't create backend".
         '';
       };
 
@@ -406,6 +484,11 @@ let
     config = {
       permittedDevices = permittedFor config.environment;
       deniedDevices = deniedFor config.environment;
+      seatdVtBound = config.vt != null;
+      requiredGroups =
+        if config.delivery == "seated" && config.vt == null
+        then [ "input" "render" "seat" "video" ]
+        else [ ];
     };
   };
 
@@ -434,6 +517,7 @@ in
           environment = "devhome";
           layout = "console";
           renderer = "pixman";
+          vt = 1; # devhome owns VT 1 on the server -- a VT-backed seat, unlike the arch LXC's.
         };
         # Its headless sibling -- the browser leg -- on no seat and no device at all.
         devhome-remote = {
@@ -467,6 +551,23 @@ in
         '';
       })
       (lib.filterAttrs (_: s: s.delivery == "headless") enabledSessions)
+
+    # ── HEADLESS NEVER DECLARES A VT ──────────────────────────────────────────────────────────
+    # A headless session has no seat at all (see `delivery`'s own doc), and a VT belongs to a
+    # seat -- so a VT number on a headless session does not describe a smaller version of the
+    # seated case, it names hardware this session will never touch. Silently ignoring the field
+    # would hide exactly that mistake rather than name it.
+    ++ lib.mapAttrsToList
+      (name: s: {
+        assertion = false;
+        message = ''
+          nixdesktop.sessions.${name} is headless but declares `vt = ${toString s.vt}`. A headless
+          session has no seat at all (see `delivery`'s own doc), and a VT belongs to a seat -- there
+          is nothing here for this number to mean. Drop `vt`, or give this session `delivery =
+          "seated"` if it is meant to own a real seat.
+        '';
+      })
+      (lib.filterAttrs (_: s: s.delivery == "headless" && s.vt != null) enabledSessions)
 
     # ── SEATED => AT LEAST ONE PERMITTED DEVICE ───────────────────────────────────────────────
     # A seated session is a DRM master on a real card. With nothing permitted there is nothing to

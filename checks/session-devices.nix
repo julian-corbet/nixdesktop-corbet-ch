@@ -111,6 +111,19 @@ let
     sessions.desk = seated { environment = "devhome"; };
   };
 
+  # The SAME estate, but VT-backed (`vt = 1` -- devhome on the server owns VT 1, see this module's
+  # own `nixdesktop.sessions` example) -- the other seated shape, proving `seatdVtBound`/
+  # `requiredGroups` actually flip with it rather than being hardcoded to the arch LXC's own shape.
+  devhomeVtBacked = withNixhost {
+    inventory = estateInventory;
+    environments.devhome.resources.gpu = devhomeClaim;
+    sessions.desk = seated { environment = "devhome"; vt = 1; };
+  };
+
+  # A headless session naming a VT it has no seat to own -- see the assertion this fixture trips
+  # below. Otherwise identical to `noNixhost`'s own `remote` fixture.
+  headlessWithVt = evalSessions { sessions.remote = headless { vt = 1; }; };
+
   # A seated session that ALSO asks for two virtual outputs -- proving `virtualOutputs` is
   # orthogonal to `delivery` right here at the module that owns both fields (see
   # `renderer`'s own doc for why a seated session declaring this must not be forced to pixman).
@@ -194,6 +207,38 @@ let
     "without nixhost both lists are empty and nothing is claimed" =
       (sessionsOf noNixhost).remote.permittedDevices == [ ]
       && (sessionsOf noNixhost).remote.deniedDevices == [ ];
+
+    # ── vt / seatdVtBound / requiredGroups: THE VT-BACKED VS NOT DISTINCTION ────────────────────
+    # See modules/session.nix's own header for the measured facts these two shapes are built on:
+    # the arch LXC has a real seat0 but no /dev/tty0 at all, while devhome (vt = 1) owns a real VT.
+    "vt defaults to null (the arch LXC's own shape, not stated as a fixture default)" =
+      (sessionsOf devhome).desk.vt == null;
+
+    "a seat with no VT is NOT seatdVtBound, and needs every device-access group, alphabetical" =
+      (sessionsOf devhome).desk.seatdVtBound == false
+      && (sessionsOf devhome).desk.requiredGroups == [ "input" "render" "seat" "video" ];
+
+    "a VT-backed seat (vt = 1) IS seatdVtBound, and needs no groups at all" =
+      (sessionsOf devhomeVtBacked).desk.seatdVtBound == true
+      && (sessionsOf devhomeVtBacked).desk.requiredGroups == [ ];
+
+    "a headless session (no seat at all) is never seatdVtBound and needs no groups either" =
+      (sessionsOf noNixhost).remote.seatdVtBound == false
+      && (sessionsOf noNixhost).remote.requiredGroups == [ ];
+
+    # ── HEADLESS NEVER DECLARES A VT ────────────────────────────────────────────────────────────
+    "a headless session declaring a vt is rejected" =
+      countMatching "is headless but declares" (firedMessages headlessWithVt) == 1;
+
+    "the headless-vt message names the session and the declared VT number" =
+      let m = lib.head (matching "is headless but declares" (firedMessages headlessWithVt)); in
+      lib.hasInfix "nixdesktop.sessions.remote" m && lib.hasInfix "vt = 1" m;
+
+    "a headless session that declares no vt at all trips no such rejection" =
+      countMatching "is headless but declares" (firedMessages noNixhost) == 0;
+
+    "a seated session declaring a vt trips no such rejection either (the estate's own VT-backed fixture)" =
+      countMatching "is headless but declares" (firedMessages devhomeVtBacked) == 0;
 
     # ── virtualOutputs: DATA PASSTHROUGH, NO CAPABILITY OPINION AT THIS LAYER ────────────────
     # This module declares no compositor mechanics (see its own header) -- the compositor

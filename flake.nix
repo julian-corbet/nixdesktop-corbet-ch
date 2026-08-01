@@ -25,8 +25,8 @@
   # `nixhost.environments.<env>.resources.gpu.<device>.access` (the device CLAIM) and
   # `nixhost.resources.gpu` (the complete inventory the denied-list complement is computed over,
   # and — as of nixgpu's stable-device-paths work — the same mirror modules/launcher.nix reads its
-  # `cardPath`/`renderPath` values from). A bare `config.nixhost.environments or { }` cannot tell
-  # "nixhost is not composed on this host" from "nixhost IS composed but that leaf moved or was
+  # `cardPath`/`renderPath`/`cardNamePath` values from). A bare `config.nixhost.environments or { }`
+  # cannot tell "nixhost is not composed on this host" from "nixhost IS composed but that leaf moved or was
   # renamed", and the second one would empty the DENIED list silently — which reads exactly like
   # "nothing to deny" while letting a forbidden card leak into niri's enumeration. probeFact is the
   # family's one shared fix for that defect class; consuming it beats vendoring a second copy.
@@ -71,13 +71,13 @@
       };
 
       # Same closure, same reasoning, for modules/launcher.nix: it reads the identical
-      # `nixhost.resources.gpu` mirror session.nix does (for `cardPath`/`renderPath` this time,
-      # rather than device names) through its own `lib.probeFact` call — see that module's own
-      # header for why a second, independent probe call is preferable to threading session.nix's
-      # result through as extra module state.
+      # `nixhost.resources.gpu` mirror session.nix does (for `cardPath`/`renderPath`/`cardNamePath`
+      # this time, rather than device names) through its own `lib.probeFact` call — see that
+      # module's own header for why a second, independent probe call is preferable to threading
+      # session.nix's result through as extra module state.
       #
       # `launcherModuleFor plane`, NOT a single `launcherModule` value, because modules/launcher.nix
-      # itself is now curried on `plane` ("nixos" | "system-manager") — see that file's own header
+      # itself is curried on `plane` ("nixos" | "system-manager") — see that file's own header
       # for the full reasoning (system-manager renders `systemd.services`/`PAMName=`/`DeviceAllow=`
       # identically to NixOS, proven live by `infra/hosts/archlxc/niri-session.nix`'s own
       # `niri-seat.service`, but has no `systemd.user.services` anywhere in its module tree — so the
@@ -151,12 +151,17 @@
 
       # ── LAUNCHER ──────────────────────────────────────────────────────────────────────────
       # Where a session instance above actually turns into a running unit — a system unit with
-      # PAMName for `delivery = "seated"`, a `--user` unit for `delivery = "headless"`. See
+      # PAMName for `delivery = "seated"` (a true AUTOLOGIN, deliberately: no greeter runs first,
+      # ever — see modules/launcher.nix's own header, "DESIGN A", for the operator's own decision
+      # this rests on and what it costs), a `--user` unit for `delivery = "headless"`. See
       # modules/launcher.nix's own header for why this had to be its own module (three desktops on
       # this estate currently have three different, private, hand-written answers to exactly this
       # problem), for how it resolves `DeviceAllow=` as a plain, static Nix value from nixgpu's
-      # stable device paths rather than mutating the unit at runtime, and for the two-plane split
-      # below.
+      # stable device paths rather than mutating the unit at runtime, for why the compositor's own
+      # `WLR_DRM_DEVICES` reads `cardNamePath` (colon-free) while `DeviceAllow=` itself still reads
+      # `cardPath`, and for the two-plane split below. `nixdesktop.launcher.deviceFence` mirrors
+      # the unit's own `DevicePolicy=`/`DeviceAllow=` a second time as read-only DATA, so a host or
+      # a check can read the enforced policy without inspecting a rendered unit.
       #
       # BOTH PLANES, because the seated case (a SYSTEM unit — `systemd.services`, `PAMName=`,
       # `User=`, `DevicePolicy=`/`DeviceAllow=`) renders through the identical nixpkgs unit code on

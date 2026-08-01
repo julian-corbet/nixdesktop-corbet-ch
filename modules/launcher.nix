@@ -25,13 +25,52 @@
 # `infra/hosts/archlxc/niri-session.nix` (read-only precedent for this file — see its own header)
 # proved live on this estate for one host, by hand, before this module generalised it.
 #
+# ── DESIGN A: AUTOLOGIN EVERYWHERE, NO GREETER, EVER — ONE PASSWORD ON EVERY PATH, NEVER TWO ─────
+#
+# An intermediate revision of this file swapped the unit below for a `share/wayland-sessions/
+# <name>.desktop` SESSION ENTRY for a GREETER to exec, on the reasoning that `PAMName=` is an
+# AUTOLOGIN — PAM opens the session but nothing in that conversation ever prompts for or collects
+# a password — so `pam_gnome_keyring`'s own `auth` line, the one that captures a TYPED password and
+# hands it to the keyring daemon so it can auto-unlock WITH it, never runs, leaving the login
+# keyring locked forever on an autologin unit. That reasoning about the MECHANISM was correct; the
+# FIX was wrong. A greeter's own PAM conversation does collect a password — that is the entire
+# point of a greeter — which means every boot now costs a SECOND password, seconds after the
+# operator already typed the LUKS passphrase to get the disk decrypted at all: cold boot becomes
+# LUKS, then a greeter, two prompts in a row, guarding a disk that is already encrypted, for the
+# one user who holds the key. This estate's own decision (Design A, operator-mandated) is exactly
+# ONE password on every path to a usable desktop — the LUKS passphrase at cold boot, the lock
+# screen when returning to an idle desk, and nothing else, ever — so a greeter is not a smaller
+# version of that design, it is a second, forbidden class of prompt. Seated is back to being the
+# unit this file rendered before that detour: `PAMName=`/`User=` on a SYSTEM unit, true autologin,
+# no greeter anywhere on this estate. Not "no greeter YET" — greetd, ly, cage, gtkgreet are all
+# equally out of scope, not because any one of them is a bad greeter, but because a greeter of any
+# kind is the wrong shape for this design.
+#
+# THE PRICE OF AUTOLOGIN, PAID ONCE, BY HAND, AND NEVER BY THIS MODULE. Since PAM's auth phase
+# never runs on this unit, the login keyring can never auto-unlock by MATCHING a captured password
+# — the only shape left is a keyring with NO password protecting it at all (gnome-keyring's own
+# "blank password" keyring, a real, distinct mode from a login-password match), which unlocks the
+# instant the daemon touches it, autologin or not. That is USER DATA — a passphrase choice on a
+# real secret store, set once by hand (seahorse, or the keyring's own first-run prompt) — never
+# something this module declares, resets, or could even see. Nothing HERE fights it either: this
+# unit never touches PAM's auth phase, never runs a keyring-locking step, and never itself asks for
+# a password anywhere on the seated path — see home/session.nix's own `keyring` option for where
+# the daemon actually starts, an ordinary `--user` service alongside this unit's own session.
+#
+# LOCKING IS home/session.nix's swayidle ASSEMBLY, ON IDLE/SUSPEND/LID — NEVER AT SESSION START.
+# This unit starts a session with nothing locked; swayidle only ever locks later, on its own
+# triggers, once the operator has actually stepped away. Locking at start would spend a second
+# password the instant this unit's autologin finished — precisely the two-in-a-row case Design A
+# exists to forbid — so nothing on this file's own path ever calls a locker.
+#
 # WHAT THIS FILE DELIBERATELY DOES NOT DO. It does not choose a compositor, a monitor layout, or a
 # device claim — those are `nixdesktop.sessions.<name>.{compositor,layout,environment}`, already
 # resolved by modules/session.nix into `permittedDevices`/`deniedDevices` (device NAMES) before
 # this file ever sees them. This module's only job is turning that already-resolved DATA into a
-# running unit. `nixdesktop.launcher.compositors` is the one new, small, deliberately extensible
-# surface it adds: the argv and device-env-var names a compositor needs, because THAT part (unlike
-# device claims, which live on `nixhost`) has nowhere else in this family to live.
+# running unit. It does not pick, install, or configure a greeter either — there is none to pick,
+# by design (see above). `nixdesktop.launcher.compositors` is the one new, small, deliberately
+# extensible surface it adds: the argv and device-env-var names a compositor needs, because THAT
+# part (unlike device claims, which live on `nixhost`) has nowhere else in this family to live.
 #
 # ── THE ENFORCEMENT MECHANISM, REBUILT ONCE ON THE BACK OF nixgpu's STABLE PATHS ────────────────
 #
@@ -47,15 +86,45 @@
 # resolves against a small fixed compile-time path list that does not include the Nix profile --
 # never against `$PATH`, contrary to what this file used to claim.
 #
-# nixgpu's `stableDevicePaths.devices.<name>.{cardPath,renderPath}` removes the reason any of that
-# existed: both are `/dev/dri/by-path/*` strings built from a PCI/platform-bus ADDRESS — a physical
-# slot, fixed at build/install time, never a probe-order artifact — so they are real Nix VALUES,
-# known at the same EVAL TIME this unit itself is rendered at. `DeviceAllow=` can therefore be an
-# ordinary STATIC list, exactly like every other `serviceConfig` field on this unit: nothing needs
-# to mutate the cgroup after the fact, so the bootstrap deadlock has no way to occur. See
-# `nixhost.resources.gpu` below for how those two fields reach this module (through the SAME
-# `lib.probeFact` mirror modules/session.nix already reads for the device NAMES, never a new flake
-# input on nixgpu — this repo still takes no compositor, and no GPU domain, as an input).
+# nixgpu's `stableDevicePaths.devices.<name>.{cardPath,renderPath,cardNamePath,renderNamePath}`
+# removes the reason any of that existed: every one of those is a string built from a
+# PCI/platform-bus ADDRESS — a physical slot, fixed at build/install time, never a probe-order
+# artifact — so they are real Nix VALUES, known at the same EVAL TIME this unit itself is rendered
+# at. `DeviceAllow=` can therefore be an ordinary STATIC list, exactly like every other
+# `serviceConfig` field on this unit: nothing needs to mutate the cgroup after the fact, so the
+# bootstrap deadlock has no way to occur. See `nixhost.resources.gpu` below for how those fields
+# reach this module (through the SAME `lib.probeFact` mirror modules/session.nix already reads for
+# the device NAMES, never a new flake input on nixgpu — this repo still takes no compositor, and no
+# GPU domain, as an input).
+#
+# ── WLR_DRM_DEVICES: `cardNamePath`, NEVER `cardPath` ──────────────────────────────────────────
+#
+# wlroots parses this colon-separated variable with a bare `strtok_r(gpus, ":", &save)`
+# (`backend/session/session.c`, `explicit_find_gpus()`, no escaping, verified against wlroots
+# `master`) — so nixgpu's `cardPath` (`/dev/dri/by-path/pci-0000:0a:00.0-card`) splits on ITS OWN
+# colons into three nonexistent paths, and wlroots logs "Found 0 GPUs, cannot create backend"
+# instead of starting. `cardNamePath` (`/dev/dri/by-name/<name>-card`) is keyed on the device's own
+# attrset key — asserted colon-free by nixgpu itself — so it is immune by construction. See
+# nixgpu's own `modules/stable-device-paths/options.nix`, "A FOURTH SYMLINK FAMILY", for the full
+# argument. `deviceAllowFor` below still uses `cardPath` for `DeviceAllow=`: that line is never
+# parsed by wlroots, and `cardPath` is the one spelling systemd-udev's own built-in rules reproduce
+# unconditionally, with no `nixgpu.stableDevicePaths.enable` required at all — `cardNamePath`
+# exists only once that option is actually set.
+#
+# ── THE VT FACT: THE ONLY REAL DIFFERENCE BETWEEN ONE SEATED UNIT AND ANOTHER, AND IT CUTS BOTH
+# WAYS ─────────────────────────────────────────────────────────────────────────────────────────
+#
+# A seat that HAS a VT requires `XDG_VTNR` set to it: omitting it makes `pam_systemd` reject
+# `CreateSession` outright with `org.varlink.service.InvalidParameter` — measured, this exact
+# failure happened live on devhome. A seat with NO VT must NOT be given `XDG_VTNR` at all — there
+# is no VT for it to claim, and stating one it does not own is simply false. Verified live: the
+# arch LXC has no `/dev/tty0` at all, yet `loginctl` there DOES report a real `seat0` with a
+# genuine user session sitting on it — the seat is real, just not VT-backed.
+# `nixdesktop.sessions.<name>.vt` (modules/session.nix — a number, or `null`) is the one fact this
+# unit reads to get both directions right: see the `Environment` block in `mkSeatedUnit` below for
+# where it becomes `XDG_VTNR=`, and `seatdVtBound`/`requiredGroups` (also modules/session.nix) for
+# the two further consequences a VT-less seat carries downstream — `SEATD_VTBOUND=0` on the same
+# unit, and the group-membership assertion further down in this file.
 #
 # ── TWO PLANES, ONE FILE: WHAT system-manager ACTUALLY SUPPORTS (READ FROM SOURCE, NOT ASSUMED) ─
 #
@@ -73,7 +142,9 @@
 # `users.users`/`users.groups` are ALSO real there (vendored verbatim from nixpkgs'
 # `nixos/modules/config/users-groups.nix`, activated through `userborn` instead of NixOS's own
 # activation scripts — see `nix/modules/upstream/nixpkgs/{users-groups,userborn}.nix`), so `homeOf`
-# below reads `config.users.users` identically on both planes.
+# below reads `config.users.users` identically on both planes — and so does the group-membership
+# assertion (`missingRequiredGroups`, further down): `config.users.users` resolves the same way
+# whichever plane composed this module.
 #
 # What genuinely does NOT exist anywhere in that module tree (`nix/modules/{default,systemd,
 # environment,tmpfiles,etc}.nix` plus everything `upstream/nixpkgs/default.nix` imports): a
@@ -125,7 +196,7 @@ let
   # session.nix stops at device NAMES (`permittedDevices`/`deniedDevices`) -- "what a device IS
   # belongs to nixgpu and is none of this module's business", per its own header. This module is
   # the first consumer that DOES need to know what a name IS, because it is the one place a name
-  # has to become something systemd can put in `DeviceAllow=` or a compositor's env var. So it
+  # has to become something this unit's own `DeviceAllow=` or a compositor's env var can use. So it
   # reads the identical mirror (`nixhost.resources.gpu`, itself a `lib.probeFact` read of
   # `nixgpu.stableDevicePaths.devices` -- see nixhost's own `modules/nixhost.nix`) through its own
   # `lib.probeFact` call, never a new flake input on nixgpu or nixhost's data shape: the house rule
@@ -144,19 +215,22 @@ let
   };
   inventory = inventoryProbe.value;
 
-  # `.cardPath` is a plain (non-nullable) `str` on nixgpu's own submodule; `.renderPath` is
-  # `nullOr str`, null exactly when the device has no render node (evdi, by driver fact, always;
-  # a BMC/IPMI framebuffer, sometimes). A permitted name absent from `inventory` altogether --
-  # legitimate, if nixhost.environments claims a device nixgpu never declared; session.nix already
-  # warns about that mismatch -- resolves to no paths at all here, silently: this module has
-  # nothing further to add about a mismatch it did not create.
+  # `.cardPath`/`.cardNamePath` are plain (non-nullable) `str` on nixgpu's own submodule;
+  # `.renderPath`/`.renderNamePath` are `nullOr str`, null exactly when the device has no render
+  # node (evdi, by driver fact, always; a BMC/IPMI framebuffer, sometimes). A permitted name absent
+  # from `inventory` altogether -- legitimate, if nixhost.environments claims a device nixgpu never
+  # declared; session.nix already warns about that mismatch -- resolves to no paths at all here,
+  # silently: this module has nothing further to add about a mismatch it did not create.
   deviceOf = name: inventory.${name} or null;
 
-  # STATIC, because both fields are eval-time Nix values now -- see this file's header. One "PATH
-  # rw" entry per card node, plus its render node when the device has one; ORDER FOLLOWS
+  # STATIC, because every field read here is an eval-time Nix value -- see this file's header. One
+  # "PATH rw" entry per card node, plus its render node when the device has one; ORDER FOLLOWS
   # `permittedDevices`, which modules/session.nix already orders primary-first (exclusive claims
   # before shared, alphabetical within each) -- this function only ever maps over that order, it
-  # never reorders it.
+  # never reorders it. Feeds `deviceFenceFor` below -- which lands both on the seated unit's own
+  # `DeviceAllow=` AND on the read-only `nixdesktop.launcher.deviceFence` mirror -- never a
+  # compositor's own env var; see this file's header for why `cardPath` is the right spelling here
+  # and the wrong one for `WLR_DRM_DEVICES`.
   deviceAllowFor = names: lib.concatMap
     (name:
       let dev = deviceOf name; in
@@ -165,15 +239,14 @@ let
     names;
 
   # The compositor's OWN device-restriction env var (`WLR_DRM_DEVICES` for a wlroots compositor)
-  # wants CARD nodes ONLY. A render node is not a candidate wlroots itself ever enumerates there --
-  # it derives the render node itself from whichever card it opens -- so handing it one is not
-  # merely redundant, `open_render_node()` treats every entry as a card candidate and a `renderD*`
-  # path fails to open as one. The previous revision fed the SAME resolved list (card and render
-  # both) to `DeviceAllow` and to this env var from one shared collector, which is exactly how that
-  # contamination happened; this function returns cardPath alone, and `deviceAllowFor` above is the
-  # only place a renderPath is ever read.
-  cardPathsFor = names: lib.concatMap
-    (name: let dev = deviceOf name; in if dev == null then [ ] else [ dev.cardPath ])
+  # wants CARD nodes ONLY, and the COLON-FREE `by-name` spelling -- see this file's header, "WLR_
+  # DRM_DEVICES: cardNamePath, NEVER cardPath". A render node is not a candidate wlroots itself
+  # ever enumerates there -- it derives the render node from whichever card it opens -- so handing
+  # it one is not merely redundant, `open_render_node()` treats every entry as a card candidate and
+  # a `renderD*` path fails to open as one; `deviceAllowFor` above is the only place a render path
+  # (name- or path-based) is ever read.
+  cardNamePathsFor = names: lib.concatMap
+    (name: let dev = deviceOf name; in if dev == null then [ ] else [ dev.cardNamePath ])
     names;
 
   # ── THE STATIC/CLOSED DEVICE FLOOR EVERY SEATED SESSION NEEDS, REGARDLESS OF WHICH CARD ───────
@@ -203,11 +276,9 @@ let
   #
   # None of this touches a DRM node, so none of it widens what this session can do to a GPU -- it
   # is the tty/input floor every interactive session needs regardless of which card it may or may
-  # not master. UNVERIFIED LIVE AS A RUNNING SEATED SESSION YET (this pass edits the tree only, per
-  # its own instructions) -- confirm on the first real rollout with `systemctl show <unit> -p
-  # DeviceAllow -p DevicePolicy` while the session is up. SHARED VERBATIM ACROSS BOTH PLANES:
-  # `DevicePolicy=`/`DeviceAllow=` are the same `serviceConfig` fields either way (see this file's
-  # header), so this floor is exactly as correct on a system-manager seated unit as a NixOS one.
+  # not master. SHARED VERBATIM ACROSS BOTH PLANES: `DevicePolicy=`/`DeviceAllow=` are the same
+  # `serviceConfig` fields either way (see this file's header), so this floor is exactly as correct
+  # on a system-manager seated unit as a NixOS one.
   staticGraphicalDeviceAllow = [
     "/dev/ptmx rw"
     "/dev/tty rw"
@@ -215,6 +286,19 @@ let
     "char-pts rw"
     "char-input rw"
   ];
+
+  # ── THE DEVICE FENCE, COMPUTED ONCE, USED TWICE ─────────────────────────────────────────────
+  #
+  # Single-sourced: `mkSeatedUnit` below writes this record's two fields straight onto the unit's
+  # own `serviceConfig.DevicePolicy`/`.DeviceAllow` -- the REAL enforcement, a kernel-checked cgroup
+  # ACL -- and `config.nixdesktop.launcher.deviceFence` (near the bottom of this file) exposes the
+  # IDENTICAL record a second time as plain, read-only DATA, so a host or `checks/launcher.nix` can
+  # read the policy without inspecting a rendered unit. Never two independent computations of the
+  # same policy: whichever changes, both read it from here.
+  deviceFenceFor = session: {
+    devicePolicy = "closed";
+    deviceAllow = staticGraphicalDeviceAllow ++ deviceAllowFor session.permittedDevices;
+  };
 
   # ── The compositor exec table, and WHY built-in rows live OUTSIDE the option's own `config` ────
   #
@@ -327,8 +411,10 @@ let
       entry = compositorEntry session.compositor;
       home = homeOf session.user;
 
-      cardPaths = cardPathsFor session.permittedDevices;
-      envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardPaths}" ]) entry.env;
+      cardNames = cardNamePathsFor session.permittedDevices;
+      envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardNames}" ]) entry.env;
+
+      fence = deviceFenceFor session;
     in
     {
       description = "nixdesktop seated session \"${name}\" (${session.compositor}, user ${session.user}, seat ${session.seat})";
@@ -346,8 +432,11 @@ let
         # never `systemd.user.services`) is the only shape `sd_pid_get_session()` can ever resolve
         # to a seat -- see this file's header. `PAMName = "login"` is what makes systemd open a
         # real PAM login session and migrate this unit's main process into its own
-        # `session-<N>.scope`, exactly as gdm/sddm/greetd do for their own children. IDENTICAL on
-        # both planes -- see this file's header for the confirmed system-manager module surface.
+        # `session-<N>.scope`. This is AUTOLOGIN, deliberately -- no greeter runs first, no password
+        # is ever collected here -- see this file's header, "DESIGN A", for why that is the whole
+        # point rather than an oversight, and what it costs (an empty-password keyring, set once by
+        # hand, never by this module). IDENTICAL on both planes -- see this file's header for the
+        # confirmed system-manager module surface.
         User = session.user;
         PAMName = "login";
         WorkingDirectory = home;
@@ -358,7 +447,20 @@ let
           "XDG_SESSION_TYPE=wayland"
           "XDG_SESSION_CLASS=user"
         ]
+        # THE VT FACT, both directions -- see this file's header. `session.vt` (modules/session.nix)
+        # is `null` on every seat this estate has ever measured with no VT (the arch LXC); a number
+        # on every seat it has measured WITH one (devhome, VT 1). Neither branch is a guess:
+        # omitting `XDG_VTNR` on a VT-backed seat is what measured live as `pam_systemd` refusing
+        # `CreateSession` with `org.varlink.service.InvalidParameter` on devhome; SETTING it on a
+        # VT-less seat would claim a VT that plainly does not exist there.
+        ++ lib.optional (session.vt != null) "XDG_VTNR=${toString session.vt}"
         ++ lib.optional (session.renderer != "auto") "WLR_RENDERER=${session.renderer}"
+        # See modules/session.nix's own `seatdVtBound` doc: `false` means this seat has no VT for a
+        # VT-bound seatd to follow -- measured live on the arch LXC, whose `/dev/tty0` does not
+        # exist at all (only `/dev/console`, a pty). Device access there rests entirely on
+        # `requiredGroups` instead -- see the assertion below that actually checks the host grants
+        # them.
+        ++ lib.optional (!session.seatdVtBound) "SEATD_VTBOUND=0"
         ++ envDeviceVars
         ++ lib.mapAttrsToList (k: v: "${k}=${v}") session.extraEnvironment;
 
@@ -366,10 +468,11 @@ let
         # file's header for what used to sit here instead (an `ExecStartPre=+` mutating the same
         # property at shell time) and why it deadlocked. `closed`, not `strict`: see
         # `staticGraphicalDeviceAllow`'s own comment for exactly what that difference buys and why
-        # each extra entry is there. Per-device entries come from `deviceAllowFor`, ordered exactly
-        # as `permittedDevices` already is.
-        DevicePolicy = "closed";
-        DeviceAllow = staticGraphicalDeviceAllow ++ deviceAllowFor session.permittedDevices;
+        # each extra entry is there. SINGLE-SOURCED from `deviceFenceFor` -- the identical record
+        # `nixdesktop.launcher.deviceFence` exposes read-only, below, never a second, independent
+        # computation of the same policy.
+        DevicePolicy = fence.devicePolicy;
+        DeviceAllow = fence.deviceAllow;
 
         # See `resolvedExecFor`'s own comment: never a bare compositor name, which systemd cannot
         # resolve against a Nix profile no matter what `$PATH` says.
@@ -474,6 +577,23 @@ let
     (name: s: map (d: { inherit name d; }) (lib.filter looksLikeRawDevicePath (s.permittedDevices ++ s.deniedDevices)))
     enabledSessions);
 
+  # ── GROUP MEMBERSHIP FOR A NON-VT-BACKED SEAT, ACTUALLY VERIFIED ────────────────────────────
+  #
+  # modules/session.nix derives `requiredGroups` (see its own doc) but reads no `users.users` at
+  # all -- it is host-and-platform-neutral by design (flake.nix's own comment: "none of it touches
+  # pkgs, systemd, or users"). This module already reads `config.users.users`, which is real and
+  # identical on both planes (see this file's header) -- for the SAME reason a defensive read beats
+  # an import elsewhere in this family: an externally-managed identity (lldap, per the design doc
+  # §6) has no entry here at all, and that is legitimate, not a defect -- only a NixOS/system-
+  # manager-MANAGED user whose `extraGroups` provably lacks a required group is a real, catchable
+  # misconfiguration, and it is exactly the one failure mode modules/session.nix's own
+  # `requiredGroups` doc warns has no error message pointing at it otherwise.
+  missingRequiredGroups = session:
+    if !(config.users.users ? ${session.user}) then [ ]
+    else lib.filter
+      (g: !(lib.elem g (config.users.users.${session.user}.extraGroups or [ ])))
+      session.requiredGroups;
+
   # ── HEADLESS ON system-manager: THE ONE GENUINE GAP, DEGRADED EXPLICITLY, NEVER SILENT ─────────
   #
   # See this file's header for the full source-reading behind this: system-manager activates only
@@ -562,10 +682,11 @@ in
             default = null;
             description = ''
               Env var NAMES this compositor reads for device restriction (e.g.
-              `[ "WLR_DRM_DEVICES" ]` for a wlroots compositor). Each is set, verbatim, to the
-              SAME colon-joined, primary-first list of resolved permitted device paths — CARD
-              nodes only, never a render node (see `cardPathsFor`'s own comment for why the two
-              must never be mixed into one list).
+              `[ "WLR_DRM_DEVICES" ]` for a wlroots compositor). Each is set, on this session's own
+              unit (`Environment=`, in `serviceConfig`), to the SAME colon-joined, primary-first
+              list of resolved permitted-device `by-name` paths — CARD nodes only, never a render
+              node (see `cardNamePathsFor`'s own comment for why the two must never be mixed into
+              one list).
 
               `null` by default, for the SAME reason `command`'s default is `null` and not `[ ]`:
               an explicit `env = [ ];` (a compositor that reads no device-restriction env var at
@@ -627,6 +748,26 @@ in
 
         SAME OPTION, SAME TABLE, ON BOTH PLANES -- this data is exec argv and env-var names, none
         of it touches `systemd`/`users` at all, so it needs no plane branching.
+      '';
+    };
+
+    deviceFence = mkOption {
+      # Opaque, deliberately -- the same choice nixhost's own `resources.gpu` makes for the
+      # identical reason (see that option's own comment): the two fields below (`devicePolicy`,
+      # `deviceAllow`) are cheap enough that a submodule would buy nothing but merge-semantics
+      # complexity a plain attrset does not have to worry about, and this module is the only
+      # writer either way.
+      type = types.attrsOf types.attrs;
+      readOnly = true;
+      description = ''
+        READ-ONLY, derived: one `{ devicePolicy; deviceAllow; }` record per SEATED session -- the
+        IDENTICAL `DevicePolicy=`/`DeviceAllow=` pair this module writes onto that session's own
+        systemd unit's `serviceConfig` (see `mkSeatedUnit`, and `deviceFenceFor`, this file's own
+        single source for both), exposed a SECOND time here as plain, read-only DATA -- so a host,
+        or `checks/launcher.nix`, can read the exact enforced policy without inspecting a rendered
+        unit. `readOnly` because the unit is what actually enforces this: writing here would change
+        nothing a real cgroup sees, so this option must never be mistaken for a second way to set
+        the policy, only a cheap way to read it back.
       '';
     };
   };
@@ -731,6 +872,34 @@ in
         })
         rawDeviceNameOffenders
 
+      # ── A SEATED, NON-VT-BACKED SESSION'S USER IS ACTUALLY IN ITS REQUIRED GROUPS ────────────
+      # See modules/session.nix's own `requiredGroups` doc: on a seat with no VT, group membership
+      # is the ONLY mechanism granting device access at all, and a group silently missing from
+      # `extraGroups` fails this session to draw anything, with an error naming neither the group
+      # nor this config. Only for a NixOS/system-manager-MANAGED user (`missingRequiredGroups`
+      # returns `[ ]`, and this fires never, for an externally-managed one) -- see that helper's
+      # own comment for why asserting into existence a fact this host genuinely cannot see would be
+      # exactly the wrong failure mode.
+      ++ lib.mapAttrsToList
+        (name: s: {
+          assertion = false;
+          message = ''
+            nixdesktop.sessions.${name} needs group(s) ${lib.concatStringsSep ", " (missingRequiredGroups s)}
+            on user "${s.user}" (managed in users.users here), but
+            users.users.${s.user}.extraGroups does not list them. This session's seat has no VT
+            (nixdesktop.sessions.${name}.vt is null -- see modules/session.nix's own
+            `requiredGroups` doc): there is no active-VT ACL to fall back on, so these groups are
+            the ONLY thing that will grant it /dev/dri/* and input access at all. A group silently
+            missing here does not fail this session to start -- it fails it to draw anything, and
+            both libinput and the DRM backend report nothing more specific than "couldn't create
+            backend". Add:
+              users.users.${s.user}.extraGroups = [ ${lib.concatMapStringsSep " " (g: "\"${g}\"") s.requiredGroups} ];
+          '';
+        })
+        (lib.filterAttrs
+          (_: s: s.requiredGroups != [ ] && config.users.users ? ${s.user} && missingRequiredGroups s != [ ])
+          seatedSessions)
+
       # ── HEADLESS NAMED ON A PLANE THAT CANNOT START IT ──────────────────────────────────────
       # See `headlessUnsupportedAssertions`'s own comment. Only folded in on the system-manager
       # plane -- a NixOS host naming a headless session is exercising exactly the feature that
@@ -809,5 +978,11 @@ in
     // lib.optionalAttrs (plane == "nixos") {
       user.services = lib.mapAttrs' (name: session: lib.nameValuePair "nixdesktop-${name}" (mkHeadlessUnit name session)) headlessSessions;
     };
+
+    # ── deviceFence: THE SAME RECORD THE UNIT ABOVE CARRIES, EXPOSED READ-ONLY TOO ────────────
+    # See `deviceFenceFor`'s own comment and the `deviceFence` option's own doc -- cheap (two small
+    # lists per seated session), single-sourced from the identical helper `mkSeatedUnit` reads, and
+    # `readOnly` so nothing can mistake writing here for a second way to set the policy.
+    nixdesktop.launcher.deviceFence = lib.mapAttrs (_: deviceFenceFor) seatedSessions;
   };
 }

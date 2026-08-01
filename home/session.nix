@@ -213,6 +213,24 @@ let
         description = "Idle/lock daemon";
       };
     })
+    # Gated on `lockAtStart` ALONE, never on `lockAfterSeconds` -- "gate the start, never lock on
+    # idle" is a legitimate configuration (see the option's own doc), and tying this to the idle
+    # daemon's existence would silently drop the only gate such a session has.
+    #
+    # Type=forking because `swaylock -f` daemonizes: it forks once the screen is actually covered,
+    # which is precisely the event worth ordering on -- systemd treats the unit as started only
+    # then, so anything ordered after this cannot paint to an unlocked screen first. `restart =
+    # "no"` for the same reason the keyring component sets it: this is a one-shot gate, and a
+    # locker that exits because the human unlocked it has SUCCEEDED, not failed. Restarting it
+    # would re-lock the session the instant they got in.
+    // (lib.optionalAttrs (cfg.idleAndLock.enable && cfg.idleAndLock.lockAtStart) {
+      "lock-at-start" = lib.mkDefault {
+        command = "${lockBin} -f";
+        description = "Lock the session at start (the one password this desk asks for)";
+        serviceType = "forking";
+        restart = "no";
+      };
+    })
     // (lib.optionalAttrs cfg.polkitAgent.enable {
       "polkit-agent" = lib.mkDefault {
         inherit (cfg.polkitAgent) command;
@@ -417,6 +435,36 @@ in
           Seconds of inactivity before the screen locks. `null` means no idle daemon at all: the
           service is not created, and `lockCommand` is then only reachable through a compositor's
           own lock keybind.
+        '';
+      };
+
+      lockAtStart = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = ''
+          Lock the session the moment it starts, before anything is visible on screen -- not only
+          after `lockAfterSeconds` of idleness.
+
+          ⚠ THIS IS OFF BY DEFAULT AND MUST STAY THAT WAY, because on most hosts it costs a SECOND
+          password immediately after the first. The estate this module was written for holds one
+          rule above ergonomics: every path to a usable desktop costs exactly ONE password entry,
+          never zero and never two in a row. On a machine you boot yourself, the disk passphrase IS
+          that one entry, and the session that comes up right after it must NOT then demand another
+          -- the human typing the second one was, provably, standing there ten seconds ago typing
+          the first.
+
+          Turn it on exactly where that reasoning inverts: a session whose host was unlocked at
+          some other time, in some other place, so that nothing has ever authenticated anyone AT
+          THIS SCREEN. The motivating case is a desktop in a container, which has no disk
+          passphrase of its own (its storage rides the host's) and no boot of its own -- started
+          deliberately, hours or weeks after the host was. There, an unlocked session is not
+          convenience, it is a desktop sitting open on a monitor with no gate in front of it at
+          all, and locking at start is what supplies the one password that desk would otherwise
+          never ask for.
+
+          Independent of `lockAfterSeconds`: this fires once at session start, the idle daemon
+          handles everything after. Setting this with `lockAfterSeconds = null` is legitimate --
+          "gate the start, never lock on idle" -- and creates no idle daemon.
         '';
       };
 

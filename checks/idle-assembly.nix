@@ -42,6 +42,18 @@ let
     in
     if services ? idle then services.idle.command else null;
 
+  # The whole `services` attrset, for assertions about units OTHER than `idle` -- `lock-at-start`
+  # is a separate unit, so `idleUnit` above cannot see it at all.
+  sessionServices = settings:
+    ((lib.evalModules {
+      modules = [
+        stubs
+        ../home/session.nix
+        { nixdesktop.session = { enable = true; } // settings; }
+      ];
+      specialArgs = { inherit pkgs; };
+    }).config).nixdesktop.session.services;
+
   base = { idleAndLock.enable = true; };
   merge = extra: { idleAndLock = base.idleAndLock // extra; };
 
@@ -51,6 +63,11 @@ let
   overridden = idleUnit (merge { command = "hypridle --config /dev/null"; });
   otherLocker = idleUnit (merge { lockCommand = "waylock"; });
   disabled = idleUnit { idleAndLock.enable = false; };
+
+  atStart = sessionServices (merge { lockAtStart = true; });
+  atStartNoIdle = sessionServices (merge { lockAtStart = true; lockAfterSeconds = null; });
+  noAtStart = sessionServices (merge { });
+  atStartOtherLocker = sessionServices (merge { lockAtStart = true; lockCommand = "waylock"; });
 
   has = haystack: needle: haystack != null && lib.hasInfix needle haystack;
 
@@ -91,6 +108,37 @@ let
       && has otherLocker "lock 'waylock -f'"
       && has otherLocker "unlock 'pkill -USR1 waylock'"
       && !(has otherLocker "swaylock");
+
+    # ── lockAtStart ─────────────────────────────────────────────────────────────────────────
+    # OFF BY DEFAULT is the load-bearing assertion here, not a formality: this option costs a
+    # SECOND password immediately after the disk passphrase on any host that boots normally, and
+    # the estate's whole rule is exactly one password per path to a usable desktop. A default that
+    # drifted to `true` would silently impose that second prompt everywhere.
+    "lockAtStart is off by default" = !(noAtStart ? "lock-at-start");
+
+    "lockAtStart creates its own unit" = atStart ? "lock-at-start";
+
+    # -f, because swaylock only daemonizes with it -- and the unit is Type=forking, so without -f
+    # systemd would wait forever for a fork that never comes and the session would never finish
+    # starting.
+    "lockAtStart locks with -f so it daemonizes" =
+      atStart."lock-at-start".command == "swaylock -f";
+    "lockAtStart unit is Type=forking" =
+      atStart."lock-at-start".serviceType == "forking";
+
+    # A locker that exits because the human unlocked it has SUCCEEDED. Restart=always here would
+    # re-lock the screen the instant they got in -- an unusable desk, and a plausible default to
+    # inherit by accident.
+    "lockAtStart never restarts" = atStart."lock-at-start".restart == "no";
+
+    # "gate the start, never lock on idle" must be expressible: the two settings are independent,
+    # and tying the start gate to the idle daemon's existence would silently drop the only gate a
+    # container desktop has.
+    "lockAtStart works with no idle daemon at all" =
+      (atStartNoIdle ? "lock-at-start") && !(atStartNoIdle ? idle);
+
+    "lockAtStart honours lockCommand" =
+      atStartOtherLocker."lock-at-start".command == "waylock -f";
   };
 
   failed = lib.attrNames (lib.filterAttrs (_: passed: !passed) results);

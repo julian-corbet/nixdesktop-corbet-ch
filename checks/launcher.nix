@@ -3,7 +3,12 @@
 # the shapes that matter most: a seated session is unrepresentable as a `--user` unit and a
 # headless one can never carry `PAMName=`, because getting that backwards is the exact defect this
 # whole module exists to remove (see modules/launcher.nix's header — the elitebook's live, silent
-# polkit failure is what a `--user` "seated" session actually looks like).
+# polkit failure is what a `--user` "seated" session actually looks like); a seated unit is a true
+# AUTOLOGIN with no greeter anywhere upstream of it (Design A — see that file's own header); its
+# `Environment=` is VT-AWARE in both directions (`XDG_VTNR` present iff `vt != null`); and the
+# resolved `WLR_DRM_DEVICES` it exports is built from nixgpu's colon-FREE `cardNamePath`, never the
+# colon-BEARING `cardPath` — the entire reason `cardNamePath` exists at all (wlroots'
+# `strtok_r`-based parser, see modules/launcher.nix's own header for the full account).
 #
 # FOUR LAYERS, DELIBERATELY, NOT ONE OR TWO. modules/launcher.nix is now curried on `plane`
 # ("nixos" | "system-manager" — see its own header for the full account of what system-manager
@@ -28,8 +33,8 @@ let
 
   # ── The same nixhost stand-in checks/session-devices.nix uses, narrowed to what
   # modules/session.nix reads (see that file's own header for why a stand-in and not the real
-  # nixhost flake) -- PLUS `cardPath`/`renderPath` on each device now, since modules/launcher.nix
-  # is the first consumer that reads past the device NAME.
+  # nixhost flake) -- PLUS `cardPath`/`renderPath`/`cardNamePath`/`renderNamePath` on each device
+  # now, since modules/launcher.nix is the first consumer that reads past the device NAME.
   envSubmodule = { ... }: {
     options = {
       resources.gpu = lib.mkOption {
@@ -60,6 +65,7 @@ let
   # actual `systemd`/`users` modules instead of this. Not `systemd.package`/a `pkgsStub`: neither
   # is read by this module any more (no `pkgs.writeShellScript`, no `ExecStartPre`, no
   # `systemctl set-property` -- see modules/launcher.nix's header for why that mechanism is gone).
+  # `users.users` is read (never written) for the group-membership assertion.
   systemHostStub = { ... }: {
     options = {
       systemd.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
@@ -81,7 +87,8 @@ let
   # fixes), even a SEATED-ONLY config -- zero headless sessions at all -- would throw "The option
   # `systemd.user.services' does not exist" the moment `config` is forced, because the module
   # system requires every written config path to match a declared option regardless of whether any
-  # session actually needed it. See `seatedOnlyCfgSm`'s own result below for that exact proof.
+  # session actually needed it. See `seatedOnlySmForcesCleanly`'s own result below for that exact
+  # proof.
   systemHostStubSystemManager = { ... }: {
     options = {
       systemd.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
@@ -103,10 +110,19 @@ let
   # implements): "ast" is a display-only device with NO render node (an AST-class BMC framebuffer,
   # `DRIVER_GEM | DRIVER_MODESET` and no more); "amd" has both. devhome permits "ast" exclusively
   # and denies "amd" outright -- the SAME claim shape checks/session-devices.nix's own fixture uses,
-  # so `permittedDevices` here resolves to exactly `[ "ast" ]`, as it does there.
+  # so `permittedDevices` here resolves to exactly `[ "ast" ]`, as it does there. `cardNamePath`/
+  # `renderNamePath` follow nixgpu's own `/dev/dri/by-name/<name>-{card,render}` convention exactly
+  # -- see modules/launcher.nix's header, "WLR_DRM_DEVICES: cardNamePath, NEVER cardPath", for why
+  # this is the field the compositor's own env var actually reads.
   estateInventory = {
-    ast = { cardPath = "/dev/dri/by-path/pci-0000:03:00.0-card"; renderPath = null; };
-    amd = { cardPath = "/dev/dri/by-path/pci-0000:0a:00.0-card"; renderPath = "/dev/dri/by-path/pci-0000:0a:00.0-render"; };
+    ast = {
+      cardPath = "/dev/dri/by-path/pci-0000:03:00.0-card"; renderPath = null;
+      cardNamePath = "/dev/dri/by-name/ast-card"; renderNamePath = null;
+    };
+    amd = {
+      cardPath = "/dev/dri/by-path/pci-0000:0a:00.0-card"; renderPath = "/dev/dri/by-path/pci-0000:0a:00.0-render";
+      cardNamePath = "/dev/dri/by-name/amd-card"; renderNamePath = "/dev/dri/by-name/amd-render";
+    };
   };
   devhomeClaim = { ast.access = "exclusive"; amd.access = "none"; };
 
@@ -125,6 +141,10 @@ let
   # unresolved-command one (niri's own built-in `command = "niri --session"` is not absolute).
   niriAbsoluteOverride = { nixdesktop.launcher.compositors.niri.command = "/nix/store/fake-niri-path/bin/niri"; };
 
+  # `vt` LEFT AT ITS DEFAULT (`null`) -- deliberately. This is the arch LXC's own shape: a seated
+  # session whose seat has no VT, which is the estate's real, live case and therefore the one worth
+  # exercising by default (`seatdVtBound == false`, `requiredGroups != [ ]`, no `XDG_VTNR` on the
+  # unit). A VT-backed sibling is its own fixture, `vtBackedCfg`, below.
   seated = extra: {
     compositor = "scroll";
     user = "richc";
@@ -149,6 +169,29 @@ let
   # `command = "scroll"` (non-absolute) and `package = null`, which is exactly the unresolved shape
   # the new assertion exists to catch.
   unresolvedCommandCfg = evalWith (baseModules ++ [ { nixdesktop.sessions.desk = seated { }; } ]);
+
+  # ── VT-BACKED, THE OTHER SEATED SHAPE ─────────────────────────────────────────────────────────
+  # devhome on the server owns VT 1 (see modules/session.nix's own example) -- `seatdVtBound ==
+  # true`, `requiredGroups == [ ]`, the unit's own `Environment=` must carry `XDG_VTNR=1`, and must
+  # carry NO `SEATD_VTBOUND` key at all (there is nothing to work around: a VT-bound seatd follows
+  # the VT normally here). This is the estate's OTHER real, live case (devhome), not a synthetic one.
+  vtBackedCfg = evalWith (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { vt = 1; }; } ]);
+
+  # ── GROUP MEMBERSHIP, THE THREE STATES ────────────────────────────────────────────────────────
+  # `seatedCfg` itself is the THIRD state (no `users.users.richc` entry at all -- an externally-
+  # managed identity) and needs no separate fixture; the assertion must be silent for it precisely
+  # because this module cannot see a fact lldap owns.
+  groupsPresentCfg = evalWith (baseModules ++ [
+    absoluteCompositorOverride
+    { users.users.richc.extraGroups = [ "video" "render" "input" "seat" "wheel" ]; }
+    { nixdesktop.sessions.desk = seated { }; }
+  ]);
+
+  groupsMissingCfg = evalWith (baseModules ++ [
+    absoluteCompositorOverride
+    { users.users.richc.extraGroups = [ "video" "wheel" ]; }
+    { nixdesktop.sessions.desk = seated { }; }
+  ]);
 
   # ── VIRTUAL OUTPUTS: THE CAPABILITY BOUNDARY, PROVEN BOTH WAYS ────────────────────────────────
   # niri's own built-in row declares `supportsVirtualOutputs = false` (measured fact, see
@@ -189,10 +232,10 @@ let
   # Trips modules/monitors.nix-style raw-name detection (§8 assertion 10): a device NAME shaped
   # like the exact thing this design exists to remove, arriving from nixhost's claim exactly as it
   # would from a real (mis-)declared inventory -- launcher.nix has no way to tell this apart from a
-  # legitimate slug except by shape. Deliberately has no `cardPath`/`renderPath` at all: proving
-  # this assertion fires never has to force `deviceAllowFor`/`cardPathsFor` (those are read only
-  # from `systemd.services`, which this test never inspects for this fixture -- see this file's
-  # own note by `firedMessages` below), so the missing fields are never a problem here.
+  # legitimate slug except by shape. Deliberately has no `cardPath`/`cardNamePath` etc at all:
+  # proving this assertion fires never has to force `deviceAllowFor`/`cardNamePathsFor` (those are
+  # read only from `systemd.services`, which this test never inspects for this fixture -- see this
+  # file's own note by `firedMessages` below), so the missing fields are never a problem here.
   rawNameCfg = evalWith (baseModules ++ [
     {
       nixhost = {
@@ -213,6 +256,7 @@ let
     || lib.any (d: lib.hasInfix ("renderD" + d) text) digits;
 
   deskUnit = seatedCfg.systemd.services."nixdesktop-desk";
+  vtBackedUnit = vtBackedCfg.systemd.services."nixdesktop-desk";
   remoteUnit = headlessCfg.systemd.user.services."nixdesktop-remote";
 
   lightweightResults = {
@@ -270,13 +314,44 @@ let
     "DeviceAllow is entirely STATIC -- no ExecStartPre exists on the seated unit any more" =
       !(deskUnit.serviceConfig ? ExecStartPre);
 
+    # ── THE DEVICE FENCE IS MIRRORED READ-ONLY, IDENTICALLY TO THE UNIT ─────────────────────────
+    "nixdesktop.launcher.deviceFence mirrors the unit's own DevicePolicy=/DeviceAllow= exactly" =
+      seatedCfg.nixdesktop.launcher.deviceFence.desk.devicePolicy == deskUnit.serviceConfig.DevicePolicy
+      && seatedCfg.nixdesktop.launcher.deviceFence.desk.deviceAllow == deskUnit.serviceConfig.DeviceAllow;
+
+    "a headless session gets no deviceFence entry at all" =
+      !(headlessCfg.nixdesktop.launcher.deviceFence ? "remote");
+
     # ── EXECSTART IS ABSOLUTE ────────────────────────────────────────────────────────────────────
     "the seated unit's ExecStart is an absolute path" =
       lib.hasPrefix "/" deskUnit.serviceConfig.ExecStart;
 
-    # ── WLR_DRM_DEVICES CARRIES CARD PATHS ONLY, NEVER A RENDER NODE ────────────────────────────
-    "the compositor's own device env var carries the card path only" =
-      lib.any (e: e == "WLR_DRM_DEVICES=/dev/dri/by-path/pci-0000:03:00.0-card") deskUnit.serviceConfig.Environment;
+    # ── WLR_DRM_DEVICES: BY-NAME, COLON-FREE -- THE ENTIRE POINT OF cardNamePath ────────────────
+    "the compositor's own device env var carries the colon-free by-name card path" =
+      lib.any (e: e == "WLR_DRM_DEVICES=/dev/dri/by-name/ast-card") deskUnit.serviceConfig.Environment;
+
+    "WLR_DRM_DEVICES contains no colon at all" =
+      let e = lib.head (lib.filter (x: lib.hasPrefix "WLR_DRM_DEVICES=" x) deskUnit.serviceConfig.Environment); in
+      !(lib.hasInfix ":" e);
+
+    # ── XDG_VTNR: PRESENT IFF vt != null -- SEE THIS FILE'S HEADER AND modules/launcher.nix's OWN
+    # "THE VT FACT" ──────────────────────────────────────────────────────────────────────────────
+    "a non-VT-backed seated session's unit carries no XDG_VTNR at all (the arch LXC's own shape)" =
+      !(lib.any (e: lib.hasPrefix "XDG_VTNR=" e) deskUnit.serviceConfig.Environment);
+
+    "a VT-backed seated session's unit carries XDG_VTNR set to the declared VT (devhome's own shape)" =
+      lib.any (e: e == "XDG_VTNR=1") vtBackedUnit.serviceConfig.Environment;
+
+    # ── SEATD_VTBOUND: PRESENT EXACTLY WHEN THE SEAT HAS NO VT ──────────────────────────────────
+    "a non-VT-backed seated session's unit exports SEATD_VTBOUND=0" =
+      lib.any (e: e == "SEATD_VTBOUND=0") deskUnit.serviceConfig.Environment;
+
+    "a VT-backed seated session's unit carries no SEATD_VTBOUND at all" =
+      !(lib.any (e: lib.hasPrefix "SEATD_VTBOUND=" e) vtBackedUnit.serviceConfig.Environment);
+
+    "a VT-backed seated session needs no groups, and trips no group assertion regardless of users.users" =
+      vtBackedCfg.nixdesktop.sessions.desk.requiredGroups == [ ]
+      && countMatching "needs group(s)" (firedMessages vtBackedCfg) == 0;
 
     # ── NEVER A LITERAL CARD NUMBER, ANYWHERE ON THE RENDERED UNIT ──────────────────────────────
     "no literal card or render-node number appears anywhere on the seated unit" =
@@ -287,6 +362,20 @@ let
             ++ deskUnit.serviceConfig.Environment);
       in
       !(containsLiteralCardNumber allText);
+
+    # ── GROUP MEMBERSHIP FOR A NON-VT-BACKED SEAT IS ACTUALLY VERIFIED ──────────────────────────
+    "the estate's baseline fixture (no users.users.richc entry -- externally managed) trips no missing-groups assertion" =
+      countMatching "needs group(s)" (firedMessages seatedCfg) == 0;
+
+    "a NixOS-managed user missing required groups trips the assertion, naming them" =
+      countMatching "needs group(s)" (firedMessages groupsMissingCfg) == 1;
+
+    "the missing-groups message names the absent groups and the present-but-irrelevant one is not mistaken for satisfying them" =
+      let m = lib.head (matching "needs group(s)" (firedMessages groupsMissingCfg)); in
+      lib.hasInfix "render" m && lib.hasInfix "input" m && lib.hasInfix "seat" m;
+
+    "a NixOS-managed user with every required group trips no such assertion" =
+      countMatching "needs group(s)" (firedMessages groupsPresentCfg) == 0;
 
     # ── AN UNKNOWN COMPOSITOR FAILS LOUDLY ──────────────────────────────────────────────────────
     "a session naming a compositor absent from the exec table is a build failure" =
@@ -369,6 +458,9 @@ let
       && lib.elem "/dev/dri/by-path/pci-0000:03:00.0-card rw" deskUnitSm.serviceConfig.DeviceAllow
       && !(lib.any (e: lib.hasInfix "0000:0a:00.0" e) deskUnitSm.serviceConfig.DeviceAllow)
       && lib.hasPrefix "/" deskUnitSm.serviceConfig.ExecStart;
+
+    "SM: deviceFence mirrors the unit identically to the NixOS plane too" =
+      seatedCfgSm.nixdesktop.launcher.deviceFence.desk.deviceAllow == deskUnitSm.serviceConfig.DeviceAllow;
 
     "SM: a seated-only config (no headless sessions at all) forces cleanly against a stub with NO systemd.user.services declared" =
       seatedOnlySmForcesCleanly;
@@ -469,6 +561,9 @@ let
     "REAL SYSTEM-MANAGER: DeviceAllow never names the denied device's node anywhere" =
       !(lib.hasInfix "0000:0a:00.0" deskUnitTextSm);
 
+    "REAL SYSTEM-MANAGER: the rendered seated unit's Environment carries the colon-free WLR_DRM_DEVICES" =
+      lib.hasInfix "WLR_DRM_DEVICES=/dev/dri/by-name/ast-card" deskUnitTextSm;
+
     "REAL SYSTEM-MANAGER: no ExecStartPre line at all" =
       !(lib.hasInfix "ExecStartPre=" deskUnitTextSm);
 
@@ -505,7 +600,7 @@ let
       launcherModuleNixos
       {
         nixhost = { resources.gpu = estateInventory; environments.devhome.resources.gpu = devhomeClaim; };
-        nixdesktop.sessions.desk = seated { };
+        nixdesktop.sessions.desk = seated { vt = 1; };
         nixdesktop.sessions.remote = headless { };
         nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll";
         system.stateVersion = "24.11";
@@ -554,6 +649,13 @@ let
 
     "REAL SYSTEM: the rendered seated unit contains no literal card or render-node number anywhere" =
       !(containsLiteralCardNumber deskUnitText);
+
+    # ── THIS FIXTURE IS VT-BACKED (vt = 1) -- so XDG_VTNR must be present, real system tree ──────
+    "REAL SYSTEM: the rendered seated unit (VT-backed, vt = 1) carries XDG_VTNR=1" =
+      lib.hasInfix "XDG_VTNR=1\n" deskUnitText;
+
+    "REAL SYSTEM: the rendered seated unit carries the colon-free by-name WLR_DRM_DEVICES" =
+      lib.hasInfix "WLR_DRM_DEVICES=/dev/dri/by-name/ast-card" deskUnitText;
 
     "REAL SYSTEM: the rendered headless unit is a systemd.user.services unit, never systemd.services" =
       (realSystem.config.systemd.user.services ? "nixdesktop-remote")
