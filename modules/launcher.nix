@@ -295,9 +295,18 @@ let
   # IDENTICAL record a second time as plain, read-only DATA, so a host or `checks/launcher.nix` can
   # read the policy without inspecting a rendered unit. Never two independent computations of the
   # same policy: whichever changes, both read it from here.
+  # `permittedDevicePaths` comes LAST, and it is the only part of this list a host writes by hand.
+  # Everything before it is derived -- the tty/input floor, then the GPU inventory's own resolved
+  # paths -- so keeping the hand-written half at the end makes a rendered unit readable: everything
+  # after the DRM lines is something a host asked for explicitly, for a device class no inventory
+  # owns yet (today: sound). See that option's own doc for why it takes paths where
+  # `permittedDevices` deliberately takes names.
   deviceFenceFor = session: {
     devicePolicy = "closed";
-    deviceAllow = staticGraphicalDeviceAllow ++ deviceAllowFor session.permittedDevices;
+    deviceAllow =
+      staticGraphicalDeviceAllow
+      ++ deviceAllowFor session.permittedDevices
+      ++ map (p: "${p} rw") session.permittedDevicePaths;
   };
 
   # ── The compositor exec table, and WHY built-in rows live OUTSIDE the option's own `config` ────

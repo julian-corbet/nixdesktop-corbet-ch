@@ -457,6 +457,36 @@ let
         '';
       };
 
+      permittedDevicePaths = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = lib.literalExpression ''[ "/dev/snd/by-path/pci-0000:0c:00.4" ]'';
+        description = ''
+          Additional device paths this session may reach, beyond the GPU inventory
+          `permittedDevices` resolves. Appended verbatim to the seated unit's `DeviceAllow=`.
+
+          WHY THIS EXISTS AT ALL, given `permittedDevices` is deliberately NAMES and not paths:
+          the fence is `DevicePolicy=closed`, an ALLOWLIST, so every device class the session
+          legitimately needs and no inventory owns would otherwise be silently unreachable. Today
+          that is SOUND. `nixgpu.stableDevicePaths` is an inventory of GRAPHICS devices; there is no
+          equivalent inventory of audio devices at the device-node layer (nixaudio names PipeWire
+          nodes, which is a different layer entirely and cannot answer "which /dev/snd node"), so a
+          host states the path itself until something owns that fact properly.
+
+          ⚠ PREFER A STABLE PATH, and the estate has already been bitten for not doing so. ALSA card
+          indices renumber exactly like DRM ones -- `/dev/snd/controlC1` is an enumeration order, not
+          an identity. `/dev/snd/by-path/pci-<addr>` is the stable spelling and is what belongs here.
+          Nothing validates this (a path is a path to systemd), which is precisely why it is said
+          here rather than assumed.
+
+          ⚠ THIS WIDENS THE FENCE. Everything listed becomes reachable to every process the session
+          spawns. It is not a claim, not conflict-checked against other environments, and has no
+          `access` semantics -- unlike a GPU claim, which nixhost arbitrates. Grant one device, not a
+          class: `char-sound rw` would hand the session EVERY sound card on the box, including ones
+          on a GPU it is otherwise fenced away from.
+        '';
+      };
+
       deniedDevices = mkOption {
         type = types.listOf types.str;
         readOnly = true;
