@@ -456,6 +456,37 @@ let
           "XDG_SEAT=${session.seat}"
           "XDG_SESSION_TYPE=wayland"
           "XDG_SESSION_CLASS=user"
+          # `PATH`, WITHOUT WHICH `spawn "fuzzel"`-SHAPED BARE NAMES SILENTLY GO NOWHERE -- MEASURED
+          # LIVE, NOT ASSUMED (2026-08-02). This unit's Environment= is rendered AFTER whichever
+          # base PATH the plane's own systemd machinery injects by default (confirmed by reading the
+          # rendered unit: a `PATH=` line naming only nix-store coreutils/findutils/gnugrep/gnused/
+          # systemd-minimal -- correct for THIS unit's own `ExecStart`, which this file's header
+          # already establishes must be absolute and therefore never consults PATH at all -- but
+          # wrong for anything the COMPOSITOR itself spawns as a bare name (config.kdl's `spawn
+          # "fuzzel"`/`spawn "foot"`, or nixniri's own `extraStartup` lines), because THAT resolution
+          # happens inside niri's own process, against ITS OWN inherited PATH, at IPC-action time --
+          # not something this file's `resolvedExecFor`/`ExecStart` discipline touches at all.
+          # systemd's own Environment= is last-value-wins per key, and this line renders after the
+          # auto-injected one, so it overrides rather than merely supplementing it.
+          #
+          # Proved live: `niri msg action spawn -- fuzzel` (a bare name, exactly what a keybind's
+          # own `spawn "fuzzel"` sends) returned success but produced no process at all; the
+          # IDENTICAL action with an absolute path (`spawn -- /usr/bin/fuzzel`) worked immediately --
+          # `execvp()` failing to resolve a bare name against a PATH that never contained `/usr/bin`,
+          # not a keybind, config, or device-access problem (all three were checked and ruled out
+          # first: the IPC action itself accepted the command, niri held real input+DRM device fds,
+          # and `niri msg outputs` reported the real panels correctly).
+          #
+          # The systemd COMPILE-TIME DEFAULT (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
+          # /sbin:/bin`, `systemd.exec(5)` -- the identical list this file's header already cites
+          # for why a bare `ExecStart` cannot be trusted to resolve against a Nix profile) is the
+          # right value here for the opposite reason it was wrong there: every one of this session's
+          # actual spawn targets (fuzzel, foot, waybar's tray click-throughs, telegram-desktop,
+          # signal-desktop) is a real Arch/pacman package living under `/usr/bin` on this plane, not
+          # a Nix-store path this module could name without knowing which -- so the ONE list that
+          # was ALREADY correct before system-manager's own narrower default silently shadowed it is
+          # the one restored here, verbatim.
+          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         ]
         # THE VT FACT, both directions -- see this file's header. `session.vt` (modules/session.nix)
         # is `null` on every seat this estate has ever measured with no VT (the arch LXC); a number
