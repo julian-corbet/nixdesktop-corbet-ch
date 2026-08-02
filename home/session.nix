@@ -59,6 +59,13 @@
 # environment into sibling processes -- they only need to be running and reachable over D-Bus/IPC,
 # which `graphical-session.target` ordering already gives them.
 #
+# ⚠ THE ONE EXCEPTION: A SEATED SESSION NEVER RUNS niri.service AT ALL. nixdesktop.launcher
+# renders a seated compositor as a SYSTEM unit (`PAMName=`/`User=` is the only way to a real
+# seat -- that module's own header) precisely BYPASSING the packaged `--user niri.service` this
+# section describes. Nothing else was ever going to start it or its target, so on a seated host
+# every component below sits dead for the whole session until `seatedNiriProxy` (below) closes
+# that gap -- see its own header for the full mechanism, measured live 2026-08-02.
+#
 # LEAN BY DESIGN, same doctrine as the other home/*.nix modules: `services.<name>` is the
 # mechanism (arbitrary command -> systemd unit), and the named blocks below (`bar`, `notifications`,
 # ...) are convenience that populate it with commands for the components this desktop actually
@@ -317,6 +324,10 @@ let
       After = svc.after;
       Requires = svc.requires;
       Before = svc.before;
+      # Empty list renders no directive, same convention as every other list field here --
+      # `bindsTo`'s own option doc has the one consumer (`seatedNiriProxy`, below) and the full
+      # reasoning for why `After=`/`Before=` ordering alone cannot express what this adds.
+      BindsTo = svc.bindsTo;
     }
     # `ConditionPathExists` is omitted entirely, not rendered as `null`, when the option is left
     # at its own default -- home-manager's systemd module writes whatever key is present verbatim
@@ -339,6 +350,14 @@ let
       # keyring assembly's header comment for the one convenience that fills it in today.
       LoadCredentialEncrypted =
         lib.mapAttrsToList (id: path: "${id}:${path}") svc.loadCredentialEncrypted;
+    }
+    # Same "absent means no directive" treatment as `ConditionPathExists` above, for the
+    # identical reason: `NotifyAccess=` (unlike a list field) has no natural "empty" rendering,
+    # so a present-but-null value would render a bogus bare `NotifyAccess=` line for every
+    # component that never touched this option -- see `notifyAccess`'s own doc for its one
+    # consumer.
+    // lib.optionalAttrs (svc.notifyAccess != null) {
+      NotifyAccess = svc.notifyAccess;
     };
     Install = {
       WantedBy = svc.wantedBy;
@@ -382,6 +401,24 @@ let
         # "failure" by systemd's own definition), permanently killing the tray icon the whole
         # "one click away" design depends on staying reachable for the rest of the session.
         restart = "always";
+      };
+    })
+    // (lib.optionalAttrs cfg.seatedNiriProxy.enable {
+      # See this option's own header comment, immediately above its declaration, for the full
+      # mechanism -- this is exactly the `services.<name>` generic escape hatch every other
+      # convenience block here compiles down to, never a different code path.
+      niri = lib.mkDefault {
+        command = ''systemd-notify --ready && while [ -S "$NIRI_SOCKET" ]; do sleep 2; done'';
+        runShell = true;
+        description = "Seated-session readiness bridge for niri.service (the real compositor runs as a system unit -- see this option's own header)";
+        serviceType = "notify";
+        notifyAccess = "all";
+        restart = "no";
+        partOf = [ ];
+        after = [ ];
+        wantedBy = [ ];
+        before = [ "graphical-session.target" ];
+        bindsTo = [ "graphical-session.target" ];
       };
     })
     // (lib.optionalAttrs cfg.clipboardHistory.enable {
@@ -574,6 +611,28 @@ in
             '';
           };
 
+          notifyAccess = lib.mkOption {
+            type = lib.types.nullOr (lib.types.enum [ "main" "exec" "all" "none" ]);
+            default = null;
+            example = "all";
+            description = ''
+              systemd's `NotifyAccess=`. `null`, the default, omits the directive -- for
+              `serviceType = "notify"`/`"notify-reload"` that leaves systemd's own default of
+              `"main"` in effect, correct whenever the process that calls `sd_notify`/
+              `systemd-notify` IS this unit's own main PID (a plain binary `command`, `runShell =
+              false`).
+
+              Set to `"all"` when `command` is shell-wrapped (`runShell = true`) and the shell
+              itself calls `systemd-notify`: that call runs as a CHILD of the shell (the shell is
+              MAINPID, not the notifier), so its READY=1 message arrives from a PID the default
+              `"main"` access silently ignores -- proved live (`systemd-run --user` scratch-unit
+              experiment, 2026-08-02): an otherwise identical unit, only `NotifyAccess=` changed,
+              and the `"main"`-access version timed out waiting for a notification that had, in
+              fact, already arrived a second earlier. `seatedNiriProxy`, below, is the one
+              consumer today.
+            '';
+          };
+
           remainAfterExit = lib.mkOption {
             type = lib.types.bool;
             default = false;
@@ -652,7 +711,27 @@ in
               for ever starts (`keyring.oo7.credential.bootstrap`, below, orders itself
               `Before = [ "keyring.service" ]` this way) -- `After=`/`Wants=` alone cannot express
               that direction, since those only ever say what THIS unit waits for, never what waits
-              for it.
+              for it. `seatedNiriProxy`, below, is a second consumer, for a different reason --
+              see `bindsTo`'s own doc.
+            '';
+          };
+
+          bindsTo = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            example = [ "graphical-session.target" ];
+            description = ''
+              systemd's `BindsTo=`. Empty by default -- see `partOf`'s own doc for why an
+              ordinary session component only ever STOPS with the target (`PartOf=`), never the
+              reverse. `BindsTo=` is what expresses "pull the named unit in as a dependency when
+              THIS one starts" (`man 5 systemd.unit`: BindsTo is Requires= plus stop
+              propagation) -- the one thing `After=`/`Before=` ordering alone cannot do. Almost no
+              consumer of this file needs it: `graphical-session.target` already has
+              `RefuseManualStart=yes` (a real, systemd-shipped unit, `man 7 systemd.special` --
+              not this repo's own invention) precisely so it is only ever reached as a
+              dependency, never started directly. `seatedNiriProxy`, below, is the one component
+              here that FILLS that dependency role instead of depending on an already-running
+              target -- see its own header for the full mechanism this field exists to support.
             '';
           };
 
@@ -957,6 +1036,83 @@ in
           over.
         '';
       };
+    };
+
+    # ── seatedNiriProxy: THE BRIDGE A SEATED SESSION NEEDS AND EVERY OTHER NIRI SESSION ALREADY
+    # HAS FOR FREE ──────────────────────────────────────────────────────────────────────────────
+    #
+    # THE GAP, MEASURED LIVE (CORBET-ELITEBOOK, corbet-archlxc, 2026-08-02). Every component
+    # above -- bar, notifications, osd, patchbay, the ones below -- is ordered
+    # `After=graphical-session.target`, exactly per this file's own header ("THE ORDERING
+    # TARGET"): niri's PACKAGED `niri.service` (`BindsTo=graphical-session.target` +
+    # `Before=graphical-session.target` + `Type=notify` + `ExecStart=niri --session`) is what
+    # pulls that target in and holds it open until the compositor's own sd_notify(READY=1)
+    # arrives. That is true and unchanged for an ordinary niri session -- a login manager, or a
+    # plain `--user` invocation, starts `niri.service` directly and gets this for free.
+    #
+    # A SEATED session (`nixdesktop.sessions.<name>.delivery = "seated"`, nixdesktop.launcher's
+    # own domain) never runs that packaged unit at all: `sd_pid_get_session()` can only ever
+    # resolve a real seat from a SYSTEM unit's own cgroup (nixdesktop.launcher's header, "THE ONE
+    # FORCED FACT"), so the compositor runs as a SYSTEM unit instead, and nothing else was ever
+    # going to start `niri.service` or its target. Measured live: `graphical-session.target`
+    # sits `inactive (dead)` for the ENTIRE session, and therefore so does every component above
+    # -- an empty screen, a perfectly healthy compositor underneath it, with no bar, no
+    # notifications, no idle lock, and nothing anywhere naming why.
+    #
+    # THE FIX. nixdesktop.launcher's own `mkSeatedUnit` (modules/launcher.nix) now fires an
+    # `ExecStartPost=systemctl --user start "<compositor>.service"` at the exact moment the real,
+    # seated compositor reports genuine readiness (gated on
+    # `nixdesktop.launcher.compositors.<name>.supportsNotify` -- niri, verified, `true`; see that
+    # option's own doc for the measured fact). This convenience is what "<compositor>.service"
+    # resolves to for niri specifically: a `niri` entry in `nixdesktop.session.services` -- the
+    # SAME generic mechanism `bar`/`notifications`/etc use above, never a different code path --
+    # whose `command` is NOT a second real compositor invocation (that would be the exact
+    # double-DRM-master crash this estate lived through once already, `drm_setmaster_ioctl`
+    # returning -EBUSY the instant a second master opens the same device -- nixdesktop.launcher's
+    # own header, "SEATING IS CGROUP-STRUCTURAL") but a tiny shim that immediately confirms what
+    # its caller already proved (`systemd-notify --ready`), then supervises the real compositor's
+    # own Wayland socket (`$NIRI_SOCKET`, already present in this session's activation
+    # environment -- niri sets it itself, imported the identical way `$WAYLAND_DISPLAY` is) for
+    # the rest of the session, exiting the moment that socket disappears.
+    #
+    # `bindsTo`/`before` = `[ "graphical-session.target" ]` reproduce the packaged unit's own
+    # shape exactly (`BindsTo=` pulls the target in as an allowed dependency-start even though it
+    # has `RefuseManualStart=yes` -- proved live, `systemd-run --user` scratch-unit experiment,
+    # 2026-08-02); `partOf`/`after`/`wantedBy` are all emptied, because this unit FILLS the
+    # target's dependency role instead of depending on an already-running one, and nothing should
+    # ever pull it in automatically -- `mkSeatedUnit`'s own `ExecStartPost=` is the only intended
+    # caller. `serviceType = "notify"` + `notifyAccess = "all"` (see that option's own doc for
+    # the exact, measured reason `"all"` is required here: `systemd-notify` runs as a shell
+    # CHILD, not this unit's own MAINPID). `restart = "no"`: this shim bridges exactly ONE PAM
+    # session's readiness into the target; if the real seated compositor ever restarts, that is a
+    # FRESH PAM session with its own fresh `ExecStartPost=` -- restarting this unit in place
+    # instead of letting it exit cleanly (via the socket-disappearing check) and be started fresh
+    # would race that new call the moment it ever wins.
+    #
+    # graphical-session.target's own `StopWhenUnneeded = "yes"` (confirmed: a real,
+    # systemd-shipped unit, `/usr/lib/systemd/user/graphical-session.target` -- not this repo's
+    # own invention) is what completes the teardown direction: `BindsTo=` is asymmetric (proved
+    # live, the same scratch-unit experiment -- stopping the bound-FROM unit does NOT stop the
+    # target it names, only the reverse), so it is this shim EXITING (the socket-watch loop
+    # ending) that makes the target "unneeded", which then stops it, which then cascades via
+    # every component's own `PartOf=graphical-session.target` -- the identical crash-teardown
+    # behaviour a normal (non-seated) niri.service already gives every other consumer of this
+    # file for free.
+    #
+    # ONLY MEANINGFUL alongside a seated session on a `supportsNotify = true` compositor (niri,
+    # verified; scroll is not -- see nixdesktop.launcher.compositors.<name>.supportsNotify's own
+    # doc). This module is home-manager-only and compositor-neutral by design (this file's own
+    # header) and cannot see `nixdesktop.sessions.<name>.delivery` or `.compositor` at all to
+    # assert against directly -- enabling this on a non-seated host, or a seated one on a
+    # compositor without notify support, renders a `niri` unit that nothing ever starts (inert,
+    # not actively wrong: `mkSeatedUnit`'s `ExecStartPost=` is the only caller, and it is gated on
+    # the identical fact) rather than a build failure naming the mismatch.
+    seatedNiriProxy = {
+      enable = lib.mkEnableOption ''
+        a thin niri.service that bridges a SEATED session's real compositor into
+        graphical-session.target, so every component above actually starts -- see this option
+        group's own header for the full mechanism and why a seated session needs it at all.
+      '';
     };
 
     clipboardHistory = {

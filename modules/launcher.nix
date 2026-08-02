@@ -348,8 +348,8 @@ let
   #     a session naming niri with `virtualOutputs != [ ]` must fail the build (see the assertion
   #     below) rather than silently producing a session with no display and no error.
   builtinCompositors = {
-    scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = null; supportsVirtualOutputs = true; };
-    niri = { command = "niri --session"; env = [ ]; package = null; supportsVirtualOutputs = false; };
+    scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = null; supportsVirtualOutputs = true; supportsNotify = false; };
+    niri = { command = "niri --session"; env = [ ]; package = null; supportsVirtualOutputs = false; supportsNotify = true; };
   };
 
   # Every name either table declares -- what "known" means for the assertion below. A name in
@@ -382,6 +382,7 @@ let
       env = pick "env" [ ];
       package = pick "package" null;
       supportsVirtualOutputs = pick "supportsVirtualOutputs" false;
+      supportsNotify = pick "supportsNotify" false;
     };
 
   # ── ExecStart MUST BE ABSOLUTE — systemd never consults $PATH for it ───────────────────────────
@@ -487,11 +488,88 @@ let
         # resolve against a Nix profile no matter what `$PATH` says.
         ExecStart = resolvedExecFor entry;
 
-        Type = "simple"; # niri/scroll never sd_notify; direct invocation (no wrapper script
-                          # stands between systemd and the compositor any more) keeps the
-                          # compositor as this unit's main PID, so Restart tracks IT directly.
+        # `Type=notify` ONLY when `entry.supportsNotify` is a MEASURED fact, not a guess (see
+        # that option's own doc for exactly what was checked, per compositor). Direct invocation,
+        # no wrapper script stands between systemd and the compositor either way -- Restart
+        # always tracks the compositor's own PID, `Type=` only changes what "started" MEANS to
+        # systemd (immediately, for `simple`; only once sd_notify(READY=1) actually arrives, for
+        # `notify`) -- so this line alone is what makes the `ExecStartPost=` below fire at the
+        # real moment the compositor is ready, rather than the moment it merely forked.
+        Type = if entry.supportsNotify then "notify" else "simple";
         Restart = "always";
         RestartSec = 2;
+      }
+      # ── THE BRIDGE INTO THE USER MANAGER'S graphical-session.target ───────────────────────────
+      #
+      # THE GAP. A seated session is, by construction (this file's header, "THE ONE FORCED
+      # FACT"), a SYSTEM unit -- the compositor's own PACKAGED `--user` unit (niri's own
+      # `niri.service`: `BindsTo=graphical-session.target` + `Before=graphical-session.target` +
+      # `Type=notify` + `ExecStart=niri --session`, confirmed by reading the real shipped file)
+      # never runs here at all. On every OTHER niri setup, THAT unit is what pulls
+      # `graphical-session.target` in and holds it open until the compositor's own readiness
+      # notification arrives. Skip it, and nothing else was ever going to start the target: it
+      # sits `inactive (dead)` for the entire session (`RefuseManualStart=yes` on the target
+      # itself forbids fixing this by hand, too -- a REAL shipped systemd unit,
+      # `/usr/lib/systemd/user/graphical-session.target`, not this repo's own invention). Measured
+      # live, CORBET-ELITEBOOK and corbet-archlxc, 2026-08-02: an empty screen, a perfectly
+      # healthy compositor underneath it, and every home/session.nix component ordered
+      # `After=graphical-session.target` -- the bar, notifications, the idle daemon, clipboard
+      # history, the polkit agent, the keyring -- dead for the whole session, with nothing
+      # anywhere naming why.
+      #
+      # THE FIX. For `Type=notify` (`entry.supportsNotify`, above), `ExecStartPost=` runs only
+      # once THIS unit's own readiness notification has genuinely arrived (`systemd.service(5)`)
+      # -- so firing `systemctl --user start "<compositor>.service"` from here starts a THIN
+      # bridge unit (home/session.nix's `seatedNiriProxy` convenience renders exactly this shape
+      # for niri -- see its own header) at the identical moment the real compositor reports
+      # ready, never earlier. That bridge unit reproduces the packaged unit's own
+      # `BindsTo=graphical-session.target` + `Before=graphical-session.target` + `Type=notify`
+      # shape, immediately confirms what this ExecStartPost already knows, and supervises the
+      # session from there -- it does NOT launch a second real compositor, which would be the
+      # exact double-DRM-master crash this estate lived through once already
+      # (`drm_setmaster_ioctl` returns -EBUSY the instant a second master opens the same device,
+      # this file's header, "SEATING IS CGROUP-STRUCTURAL") rather than a harmless duplicate.
+      #
+      # THE `+` PREFIX IS REQUIRED, NOT OPTIONAL -- MEASURED LIVE, NOT ASSUMED (2026-08-02), AND
+      # THE OPPOSITE OF THIS FILE'S FIRST ATTEMPT. Without it, `ExecStartPost=` inherits this
+      # unit's own `User=`/`PAMName=login`/`XDG_VTNR=1` -- and, empirically, EVERY exec command on
+      # a `PAMName=` unit opens its OWN independent PAM session, not one shared session for the
+      # whole unit (confirmed: the journal shows a SEPARATE `pam_unix(login:session): session
+      # opened` line for the `ExecStartPost` process, distinct from the one for `ExecStart`'s own
+      # niri). A second `PAMName=login` session claiming the SAME `XDG_VTNR` while the first
+      # (niri's) is still open fails outright --
+      # `pam_systemd(login:session): Varlink call io.systemd.Login.CreateSession failed:
+      # io.systemd.Login.VirtualTerminalAlreadyTaken` -- which fails the ExecStartPost control
+      # process, which fails the WHOLE unit (`Control process exited, code=exited,
+      # status=1/FAILURE`), which restarts it, which repeats the identical collision: a crash
+      # loop that hits `start-limit-hit` in under 15 seconds, taking the previously-healthy real
+      # compositor down with it. `+` runs this ONE command with the manager's own (root)
+      # privileges, skipping `User=`/`Group=`/`PAMName=` (and therefore the second PAM session)
+      # entirely for it (`systemd.service(5)`, COMMAND LINES) -- niri's own `ExecStart=` above is
+      # deliberately NOT prefixed, so it alone still opens the one real seated PAM session this
+      # unit exists to open.
+      #
+      # `--machine="${session.user}@.host" --user`, not a bare `--user`, for the identical reason
+      # `+` is required: this command now runs as root with NO `XDG_RUNTIME_DIR`/
+      # `DBUS_SESSION_BUS_ADDRESS` of its own to fall back on (root's, not richc's) -- confirmed
+      # live: a bare `systemctl --user` here fails immediately with "Failed to connect to user
+      # scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not
+      # defined", and that very error message names the fix used here. `--machine=<user>@.host`
+      # is systemd's own documented mechanism for a privileged caller to reach a SPECIFIC user's
+      # `--user` manager by NAME, with no numeric uid and no pre-set environment required --
+      # exactly the shape this module already prefers (`session.user` is a name throughout, see
+      # modules/session.nix's own `user` option doc: "never a uid, and never a uid anywhere
+      # downstream either").
+      #
+      # `${config.systemd.package}/bin/systemctl`, never a bare name or a hardcoded `/usr/bin/
+      # systemctl` -- see this file's header, "ExecStart MUST BE ABSOLUTE": ExecStartPost is
+      # parsed by the identical grammar, and `systemd.package` (confirmed present on both planes
+      # -- this file's header, "TWO PLANES, ONE FILE", already establishes system-manager renders
+      # through the same real nixpkgs systemd module tree NixOS does) is the one spelling that
+      # resolves correctly regardless of which plane composed this module, rather than assuming
+      # `/usr/bin/systemctl` exists (true on the Arch/system-manager plane, unverified on NixOS).
+      // lib.optionalAttrs entry.supportsNotify {
+        ExecStartPost = "+${config.systemd.package}/bin/systemctl --machine=\"${session.user}@.host\" --user start ${session.compositor}.service";
       };
     };
 
@@ -753,6 +831,45 @@ in
               fallback, when neither a consumer nor a built-in row ever set this field, is
               `false`) is a build failure the moment it also declares `virtualOutputs` -- see the
               assertion below -- not a session with no display and no error saying why.
+            '';
+          };
+
+          supportsNotify = mkOption {
+            type = types.nullOr types.bool;
+            default = null;
+            example = true;
+            description = ''
+              Whether this compositor's OWN binary calls sd_notify(READY=1) once it is genuinely
+              ready (backend up, outputs configured) -- never whether some WRAPPER around it
+              could be made to. Drives `mkSeatedUnit`'s own `Type=`/`ExecStartPost=` below: a
+              seated session is a SYSTEM unit that bypasses the compositor's PACKAGED `--user`
+              unit entirely (this file's header, "THE ONE FORCED FACT"), so nothing else was
+              ever going to fire that packaged unit's own `BindsTo=graphical-session.target` --
+              this field is what tells `mkSeatedUnit` it can safely reproduce that exact
+              mechanism itself, on the SYSTEM unit, instead of silently leaving every
+              `graphical-session.target`-ordered component (home/session.nix's bar,
+              notifications, idle daemon, ...) dead for the whole session.
+
+              `null` by default, same "never touched" vs "deliberately false" distinction
+              `supportsVirtualOutputs` already documents for the identical reason -- a bare
+              `false` default would make the two indistinguishable and silently discard a
+              built-in row's own `true` the moment a consumer touched one other field.
+
+              MEASURED, per compositor, not assumed identical across the family (2026-08-02):
+              niri 26.04's own binary contains the real libsystemd sd_notify protocol strings
+              (`strings /usr/bin/niri`: READY=1, NOTIFY_SOCKET, RELOADING=1, STOPPING=1,
+              WATCHDOG=1) and its packaged `niri.service` genuinely ships `Type=notify` +
+              `BindsTo=graphical-session.target` + `Before=graphical-session.target` -- so
+              `niri`'s own row below is `true`. scroll's real binary (`sway-unwrapped`, the
+              package scroll is built from) was checked the identical way and shows NEITHER an
+              `sd_notify` symbol import nor any shipped `.service` unit at all, consistent with
+              its sway lineage (sway has never implemented this) -- so `scroll`'s row is `false`,
+              a measured fact, not a placeholder. A compositor with no entry here (the `null`
+              fallback resolves to `false` wherever `mkSeatedUnit` reads it) keeps the ORIGINAL
+              `Type = "simple"` behaviour unchanged, with the identical gap this field exists to
+              close on `niri` -- state `true` yourself once you have actually verified a new
+              compositor the same way, never on the assumption that "notify-capable" is the
+              common case.
             '';
           };
         };
