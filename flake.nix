@@ -234,6 +234,13 @@
         # is why real configs end up writing `sleep 1 && waybar`.
         session = ./home/session.nix;
 
+        # kanshi profiles generated from `nixdesktop.layouts`, for the one thing a compositor's own
+        # output config cannot express: switching an output off BECAUSE others are present. Needs
+        # `session` composed alongside it (it declares its daemon through
+        # `nixdesktop.session.services`), and needs the compositor's own `nixdesktop.layout` left
+        # null on the same host -- see that file's header on why exactly one owner per output.
+        kanshi = ./home/kanshi.nix;
+
         waybar = ./home/waybar.nix;
         mako = ./home/mako.nix;
         swaylock = ./home/swaylock.nix;
