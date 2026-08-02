@@ -633,6 +633,28 @@ let
       '';
     })
     headlessSessions;
+
+  # ── THE VT's OTHER CLAIMANTS ────────────────────────────────────────────────────────────────
+  # A seated `PAMName=` unit does not own its VT merely by asking for it. `getty@tty<vt>` is
+  # statically enabled by the distro's own presets, and `autovt@tty<vt>` is what logind spawns
+  # on demand if that VT is ever reactivated -- either one will happily open a login session on
+  # the same VT this module just claimed, and then BOTH mechanisms are racing for one seat.
+  # Whichever arrives first wins the boot; the loser fails, retries, and dies on its start limit.
+  #
+  # Measured live on a laptop running exactly this module: the getty-spawned login won every boot,
+  # the seated unit burned its five restarts and sat in `start-limit-hit`, and that host's own
+  # config asserted in a comment that both units were "masked outright" -- while nothing in this
+  # module, or anywhere else, had ever implemented that masking. The comment described a design;
+  # the design was never built. This is it.
+  #
+  # Both instances, never just `getty@`: masking the boot-time unit alone leaves `autovt@` free to
+  # re-enter one `loginctl activate` later, which is the identical race merely deferred.
+  vtGettyMaskUnits = lib.concatMap
+    (session: lib.optionals (session.vt != null && session.maskVtGetty) [
+      "getty@tty${toString session.vt}.service"
+      "autovt@tty${toString session.vt}.service"
+    ])
+    (lib.attrValues seatedSessions);
 in
 {
   options.nixdesktop.launcher = {
@@ -986,6 +1008,21 @@ in
     # with a seated-only session table.
     // lib.optionalAttrs (plane == "nixos") {
       user.services = lib.mapAttrs' (name: session: lib.nameValuePair "nixdesktop-${name}" (mkHeadlessUnit name session)) headlessSessions;
+
+      # See `vtGettyMaskUnits`. NixOS's own masking mechanism is `systemd.units.<name>.enable =
+      # false`, which renders the unit as a symlink to /dev/null -- `systemd.services.<name>` is
+      # the wrong surface for a TEMPLATE INSTANCE like `getty@tty1`, which NixOS does not
+      # generate content for and would therefore not emit at all.
+      units = lib.listToAttrs (map (u: lib.nameValuePair u { enable = false; }) vtGettyMaskUnits);
+    }
+    // lib.optionalAttrs (plane == "system-manager") {
+      # See `vtGettyMaskUnits`. `systemd.maskedUnits` (numtide/system-manager's own
+      # `nix/modules/systemd.nix`) is the mechanism here, NOT `systemd.services.<name>.enable =
+      # false`: that only does anything for units system-manager itself generates content for,
+      # per its own documentation -- pointed at a distro-owned unit like `getty@tty1` it is a
+      # SILENT no-op, which is indistinguishable from a working mask right up until the boot
+      # where the getty wins the race.
+      maskedUnits = vtGettyMaskUnits;
     };
 
     # ── deviceFence: THE SAME RECORD THE UNIT ABOVE CARRIES, EXPOSED READ-ONLY TOO ────────────

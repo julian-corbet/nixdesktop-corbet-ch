@@ -273,6 +273,30 @@ let
         '';
       };
 
+      maskVtGetty = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Mask `getty@tty<vt>` and `autovt@tty<vt>`, so nothing else can claim this session's VT.
+          No effect when `vt = null` -- a seat with no VT has no getty to collide with.
+
+          ON by default because the collision is not a matter of taste, it is a race: a seated
+          `PAMName=` unit and a getty on the SAME VT are two mechanisms competing to own one seat,
+          and whichever reaches it first wins the boot. Measured live on the laptop: the
+          getty-spawned login won at boot and the seated unit burned its five restarts and failed
+          with `start-limit-hit`, every boot, silently -- while that host's own comments asserted
+          the getty was masked. Nothing had ever implemented the masking they described.
+
+          BOTH instances are masked, never just the first: `getty@tty<vt>` is the statically
+          enabled boot-time unit, `autovt@tty<vt>` is the on-demand instance logind spawns if that
+          VT is reactivated. Masking only `getty@` leaves `autovt@` free to re-enter one
+          `loginctl activate` later -- the same race, merely deferred.
+
+          Set `false` only if you deliberately want a console login on the same VT as a graphical
+          session, accepting that exactly one of them wins, nondeterministically.
+        '';
+      };
+
       seatdVtBound = mkOption {
         type = types.bool;
         readOnly = true;

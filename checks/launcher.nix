@@ -77,6 +77,9 @@ let
       systemd.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       systemd.user.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       systemd.tmpfiles.rules = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+      # NixOS's masking surface -- `systemd.units.<name>.enable = false`. Declared here because
+      # this module writes it for a VT-backed seated session (see `vtGettyMaskUnits`).
+      systemd.units = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       users.users = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
     };
   };
@@ -99,6 +102,10 @@ let
     options = {
       systemd.services = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       systemd.tmpfiles.rules = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+      # system-manager's OWN masking surface (`nix/modules/systemd.nix`), a plain list -- not
+      # NixOS's `systemd.units.<name>.enable`. The two planes genuinely differ here, which is why
+      # modules/launcher.nix emits one or the other rather than a single shared write.
+      systemd.maskedUnits = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
       users.users = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       # DELIBERATELY NO `systemd.user.services` HERE -- see the comment above.
     };
@@ -182,6 +189,15 @@ let
   # carry NO `SEATD_VTBOUND` key at all (there is nothing to work around: a VT-bound seatd follows
   # the VT normally here). This is the estate's OTHER real, live case (devhome), not a synthetic one.
   vtBackedCfg = evalWith (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { vt = 1; }; } ]);
+
+  # ── THE VT's OTHER CLAIMANTS: the opt-out, and the seatless case ────────────────────────────
+  # Both directions of `maskVtGetty` against the SAME VT-backed fixture above, plus the `vt = null`
+  # case where there is no VT to have a getty on at all. Without these, "masks both instances"
+  # would pass just as happily for a module that masked unconditionally.
+  vtBackedNoMaskCfg = evalWith (baseModules ++ [
+    absoluteCompositorOverride
+    { nixdesktop.sessions.desk = seated { vt = 1; maskVtGetty = false; }; }
+  ]);
 
   # ── permittedDevicePaths: A HOST-STATED PATH FOR A DEVICE CLASS NO INVENTORY OWNS ────────────
   # A by-path ALSA node -- the estate's own worked example (modules/session.nix's own doc, and the
@@ -304,6 +320,32 @@ let
 
     "a headless session never appears under systemd.services" =
       !(headlessCfg.systemd.services ? "nixdesktop-remote");
+
+    # ── THE VT's OTHER CLAIMANTS ────────────────────────────────────────────────────────────
+    # The regression these exist for is not hypothetical: the laptop's own config asserted in a
+    # comment that both units were masked, nothing implemented it, and the seated unit lost the
+    # race to a getty every boot for weeks while `start-limit-hit` was the only visible symptom.
+    "a VT-backed seated session masks getty on its VT" =
+      vtBackedCfg.systemd.units."getty@tty1.service".enable == false;
+
+    # BOTH instances -- masking `getty@` alone leaves `autovt@` to re-enter one VT-switch later.
+    "a VT-backed seated session masks autovt on its VT too" =
+      vtBackedCfg.systemd.units."autovt@tty1.service".enable == false;
+
+    "a seatless session masks no getty at all" =
+      seatedCfg.systemd.units == { };
+
+    "maskVtGetty = false leaves the VT's getty alone" =
+      vtBackedNoMaskCfg.systemd.units == { };
+
+    # The system-manager plane uses a DIFFERENT mechanism for the same fact -- a plain list, not
+    # `units.<name>.enable`. `enable = false` is a silent no-op there for a unit system-manager
+    # does not itself generate, which is exactly how a mask can look applied and do nothing.
+    "the system-manager plane masks through maskedUnits, not units.enable" =
+      vtBackedCfgSm.systemd.maskedUnits == [ "getty@tty1.service" "autovt@tty1.service" ];
+
+    "a seatless session masks nothing on the system-manager plane either" =
+      seatedCfgSm.systemd.maskedUnits == [ ];
 
     "a headless unit is scoped to its own user via ConditionUser" =
       remoteUnit.unitConfig.ConditionUser == "richc";
@@ -484,6 +526,7 @@ let
   # `systemHostStubSystemManager` fixture that faithfully omits `systemd.user.services` -- see that
   # stub's own comment for why its absence is itself part of the proof.
   seatedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { }; } ]);
+  vtBackedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { vt = 1; }; } ]);
   headlessUnsupportedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.remote = headless { }; } ]);
 
   # permittedDevicePaths, same fixture shape as the lightweight NixOS layer above (`sndPath`,
