@@ -3,9 +3,11 @@
 # role (`compositor`, a free-form string), resolved by a platform backend exactly like every
 # other role here. This module installs nothing and names no package.
 #
-# WHY NO PACKAGES HERE. Package names are platform-specific (`thunar` on Arch, `xfce.thunar` in
-# nixpkgs) and so are binary paths (mate-polkit's agent lives somewhere different on every
-# distro). A profile that emits package names is a profile that only works on one distro. So this
+# WHY NO PACKAGES HERE. Package names are platform-specific (`pcmanfm-gtk3` on Arch,
+# `pkgs.pcmanfm` in nixpkgs) and so are binary paths (mate-polkit's agent lives somewhere
+# different on every distro). Worse, on NixOS some roles are not a package at all: gvfs and Thunar
+# only work through real NixOS options, so what a role RESOLVES TO differs in kind, not just in
+# spelling. A profile that emits package names is a profile that only works on one distro. So this
 # module emits ROLES — a read-only `nixdesktop.want` attrset — and a platform backend resolves
 # them. nixarch ships the Arch/CachyOS backend; this repo's own `modules/nixos-backend.nix` is
 # the NixOS one.
@@ -188,6 +190,63 @@ in
       '';
     };
 
+    fileManagerExtras = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Taste-level file-manager add-ons on top of whatever `fileManager` names: archive
+        integration ("Create Archive" / "Extract Here" in the context menu, plus an archive
+        manager for it to hand the work to), media-tag editing, and VCS status decorations.
+        Default false — none of it is needed for a file manager to work, which is the line
+        `fileManager` itself covers.
+
+        NOT SYMMETRIC ACROSS PLATFORMS, and worth knowing before you read a backend. On Arch a
+        file-manager plugin is an ordinary package: it drops a `.so` into a shared directory the
+        installed file manager already reads. On NixOS there is no shared directory — a Thunar
+        plugin is only ever loaded through a wrapper built around the plugin set, so the NixOS
+        backend feeds these to `programs.thunar.plugins` and a plugin placed in
+        `environment.systemPackages` instead would install a file nothing reads. Which archiver
+        satisfies the archive plugin also differs by platform for the same reason; the backend
+        picks one that actually resolves rather than the most obvious name.
+      '';
+    };
+
+    gvfsBackends = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Network and device backends for the virtual filesystem layer `fileManager` browses
+        through: SMB/CIFS shares, NFS, MTP phones, PTP cameras. Without them the local disk still
+        works and every remote or device uri simply fails to resolve.
+
+        NOT SYMMETRIC ACROSS PLATFORMS. Arch splits these into separate packages
+        (`gvfs-smb`, `gvfs-nfs`, `gvfs-mtp`, `gvfs-gphoto2`) that each have to be asked for, which
+        is the reason this role exists at all. nixpkgs builds one gvfs with all of them compiled
+        in, so on NixOS they arrive with the file manager itself and setting this changes nothing
+        — it is a no-op there, deliberately, not an unimplemented option. Set it if you want the
+        capability stated in your config regardless of which platform it lands on.
+      '';
+    };
+
+    theming = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        GTK/Qt appearance tooling: something to write the GTK settings with, a GTK3 theme that
+        matches the GTK4/libadwaita look, and a Qt platform-theme configurator. A bare Wayland
+        session has no control centre, so nothing writes those settings otherwise and mixed-toolkit
+        applications end up visibly mismatched — a Qt dialog rendering unstyled next to GTK ones is
+        the usual first symptom.
+
+        Off by default because appearance is the one thing a consumer most likely wants to own
+        outright (a home-manager `gtk`/`qt` block, a dotfiles repo), and a role that installs a
+        theme is a role that fights with that.
+
+        Available on both platforms, unlike the two roles above — the asymmetry here is only in the
+        package names, which is exactly what a backend is for.
+      '';
+    };
+
     extraComponents = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -231,6 +290,9 @@ in
       clipboardHistory
       idleAndLock
       portals
+      fileManagerExtras
+      gvfsBackends
+      theming
       extraComponents
       ;
   };

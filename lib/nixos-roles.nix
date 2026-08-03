@@ -38,16 +38,72 @@
 rec {
   # ── Roles whose implementation is a named choice ────────────────────────────────────────────
 
-  # Same floor as nixarch's table, same reasoning: a file manager alone is not a working file
-  # manager without a thumbnailer and gvfs (removable media, network shares, MTP phones). Taste-
-  # level plugins stay the consumer's business via `extraComponents`.
+  # A file manager alone is not a working file manager: thumbnails need a thumbnailer service, and
+  # mounting or browsing anything — a USB stick, an SMB share, an MTP phone — needs gvfs. nixarch's
+  # equivalent table ships that whole floor as pacman names right in the entry, because on Arch
+  # installing the package IS enabling it. NixOS is the case the `capabilities` header below
+  # describes for portals, and it bites harder here than anywhere else:
+  #
+  #   - `pkgs.gvfs` in `environment.systemPackages` leaves `GIO_EXTRA_MODULES` unset, so NOT ONE uri
+  #     scheme resolves — no smb://, no mtp://, no sftp://, not even trash:// or network://. And
+  #     nothing MOUNTS at all, not even a USB stick, because that takes `programs.fuse.enable` and
+  #     `services.udisks2.enable`, neither of which follows from a package; nor do the libmtp udev
+  #     rules a phone or camera needs. All four come from `services.gvfs.enable` and nowhere else
+  #     (nixpkgs' `nixos/modules/services/desktops/gvfs.nix`).
+  #   - `pkgs.thunar` is the UNWRAPPED binary. thunarx plugins load only from `THUNARX_DIRS`, which
+  #     is set exclusively by the wrapper `pkgs.thunar.override { thunarPlugins = ...; }` builds,
+  #     pointing at its own symlinkJoin output — so with plugins installed any other way they NEVER
+  #     load. `programs.thunar.enable` is also what rewrites thunar's systemd user unit and its
+  #     three `org.xfce.*` D-Bus activation files to name the WRAPPED binary; without it, "open
+  #     containing folder" from another app D-Bus-activates the plugin-less copy instead. And it
+  #     sets `programs.xfconf.enable`, without which Thunar persists NO settings whatsoever.
+  #
+  # So the floor is wired through the real options by modules/nixos-backend.nix, exactly as
+  # `portalPackages` is, and this table carries only what those options do NOT already install.
+  #
+  # AND LISTING THEM ANYWAY WOULD BE WORSE THAN REDUNDANT, not merely untidy — which is why no
+  # entry below names gvfs, and the thunar entry names neither thunar nor tumbler.
+  # `services.gvfs.enable` installs `services.gvfs.package`, whose default is `pkgs.gnome.gvfs` —
+  # that is `gvfs.override { gnomeSupport = true; }`, a DIFFERENT store path carrying the IDENTICAL
+  # `gvfs-<version>` name. Adding `pkgs.gvfs` beside it puts two same-named gvfs builds in the
+  # system profile, one of which wins arbitrarily while `GIO_EXTRA_MODULES` keeps pointing at the
+  # other: a half-working gvfs with nothing to blame. Same shape for thunar, except the two names
+  # DIFFER (`thunar-<version>` vs `thunar-with-plugins-<version>`) so not even a collision warning
+  # fires, and both ship `bin/thunar`.
+  #
+  # thunar-volman is the one thing left in the `thunar` entry, and it belongs there rather than in
+  # `thunarPlugins` below because it is not a thunarx plugin at all: `nix build` + `find $out` shows
+  # `bin/thunar-volman` and `bin/thunar-volman-settings` and NO `lib/thunarx-3/*.so` (nixpkgs' own
+  # `programs.thunar.plugins` example lists it anyway — misleading; it would work from there only
+  # because the wrapper's symlinkJoin merges `bin/` too, not because anything loads it as a plugin).
+  # Thunar spawns it by bare name — `argv[0] = g_strdup ("thunar-volman")` in `thunar-application.c`,
+  # a PATH lookup whose only failure mode is a g_warning nobody sees — so PATH is exactly right.
   fileManagers = {
-    thunar = [ pkgs.thunar pkgs.tumbler pkgs.gvfs pkgs.thunar-volman ];
-    nautilus = [ pkgs.nautilus pkgs.gvfs ];
+    thunar = [ pkgs.thunar-volman ];
+    nautilus = [ pkgs.nautilus ];
     dolphin = [ pkgs.kdePackages.dolphin pkgs.kdePackages.kio-extras ];
-    nemo = [ pkgs.nemo pkgs.gvfs ];
-    pcmanfm = [ pkgs.pcmanfm pkgs.gvfs ];
+    nemo = [ pkgs.nemo ];
+    pcmanfm = [ pkgs.pcmanfm ];
   };
+
+  # thunarx plugins, for `programs.thunar.plugins` — NEVER `environment.systemPackages`. A plugin
+  # dropped in the package list installs a `.so` into a store path no thunar ever reads: only the
+  # wrapper's `THUNARX_DIRS` is consulted, and it names the wrapper's own output. Wired by
+  # modules/nixos-backend.nix, gated on `want.fileManagerExtras`, for the same reason
+  # `portalPackages` is wired rather than resolved — see the `capabilities` header below.
+  #
+  # Top-level attributes, all three: the `pkgs.xfce.thunar-*-plugin` paths still evaluate but emit a
+  # "was moved to top-level" warning on every rebuild.
+  #
+  # thunar-vcs-plugin is the Git half only as packaged (`withSubversion ? false`); it shells out to
+  # a bare `"git"` (`tvp-git-helper/*.c`), so its menu entries need git on PATH — which, since they
+  # only appear inside a working copy, is a condition that answers itself. An SVN-capable build is
+  # an `.override`, not a second entry here.
+  thunarPlugins = [
+    pkgs.thunar-archive-plugin
+    pkgs.thunar-media-tags-plugin
+    pkgs.thunar-vcs-plugin
+  ];
 
   polkitAgents = {
     mate-polkit = {
@@ -141,6 +197,12 @@ rec {
   # than pretend that gap away by wiring it through `packagesFor` like everything else,
   # `portalPackages` below is exported separately and modules/nixos-backend.nix wires it through
   # the real option.
+  #
+  # `fileManagerExtras` below is the same story told half-way: the boolean IS a key here, because
+  # the archiver it installs is an ordinary package, but the thunarx plugins the role is actually
+  # about are `thunarPlugins` above and reach `programs.thunar.plugins` through the backend. A
+  # capability whose package set is a partial answer says so in its own comment; none of them
+  # silently pretends `environment.systemPackages` was enough.
   capabilities = {
     # niri probes for xwayland-satellite by name at startup and, if absent, WARNS and continues
     # with X11 integration silently disabled — which surfaces much later as "X11 apps don't
@@ -149,6 +211,54 @@ rec {
     screenshots = [ pkgs.grim pkgs.slurp ];
     clipboardHistory = [ pkgs.cliphist pkgs.wl-clipboard ];
     idleAndLock = [ pkgs.swayidle pkgs.swaylock ];
+
+    # The plugins this boolean really exists for are NOT here — they are `thunarPlugins` above,
+    # wired through `programs.thunar.plugins`. What IS here is the archive manager the archive
+    # plugin dispatches to: with no archiver installed, "Create Archive"/"Extract Here" appear in
+    # the context menu and do nothing useful, which is the exact failure this whole file exists to
+    # stop shipping.
+    #
+    # engrampa, NOT xarchiver, and that is a NixOS fact rather than a taste call.
+    # thunar-archive-plugin never runs an archiver directly: it looks up a `<desktop-id>.tap`
+    # wrapper script under the LIBEXECDIR baked into the plugin at compile time
+    # (`tap_backend_mime_wrapper`, `tap-backend.c`) and FILTERS OUT of its candidate list every
+    # application for which no such script exists. On Arch that directory is the shared
+    # `/usr/lib/thunar-archive-plugin`, so the `xarchiver.tap` that xarchiver itself installs lands
+    # next to the plugin's bundled ones and resolves. On NixOS LIBEXECDIR is the PLUGIN'S OWN store
+    # path, so the only wrappers reachable are the ones the plugin ships — ark, engrampa,
+    # file-roller, plus desktop-id symlinks — and xarchiver's tap sits unreachable in xarchiver's
+    # store path. Installing xarchiver here would turn "Extract Here" into "No suitable archive
+    # manager found". Read out of the plugin's C source and both packages' built outputs, not
+    # inferred from the Arch layout.
+    #
+    # Of the three that DO resolve, engrampa is the one this project's own constraint permits: ark
+    # drags KDE Frameworks onto a GTK desktop, file-roller is GTK4 + libadwaita at the pinned
+    # version, engrampa is GTK3 — the same reasoning that makes mate-polkit the default polkit
+    # agent (see profiles/desktop.nix's header).
+    fileManagerExtras = [ pkgs.engrampa ];
+
+    # DELIBERATELY EMPTY, and the emptiness is the content. nixpkgs builds ONE gvfs derivation with
+    # samba, libnfs, libmtp and libgphoto2 all as ordinary buildInputs (`pkgs/by-name/gv/gvfs`:
+    # libgphoto2 and libnfs unconditional, samba and libmtp under the `udevSupport` branch that
+    # defaults true on Linux), so smb://, nfs://, mtp:// and gphoto2:// all arrive the moment
+    # `services.gvfs.enable` is on and there is nothing left for this role to install. Arch splits
+    # the same backends into separate `gvfs-smb`/`gvfs-nfs`/`gvfs-mtp`/`gvfs-gphoto2` packages that
+    # each have to be asked for, which is the only reason the role exists. The key stays here,
+    # rather than being left out to resolve to nothing by accident, so the asymmetry is visible to
+    # the next reader instead of looking like an omission.
+    gvfsBackends = [ ];
+
+    # A wlroots session has no control centre, so the GTK/Qt appearance settings every toolkit
+    # still reads have nothing writing them: nwg-look writes the GTK ones, qt6ct gives Qt a platform
+    # theme, and adw-gtk3 is what makes GTK3 apps match the GTK4/libadwaita ones next to them
+    # instead of looking a decade older.
+    #
+    # `pkgs.qt6Packages.qt6ct`, NOT `pkgs.qt6ct`: the top-level attribute still EXISTS but is a
+    # throwing alias, so naming it fails evaluation outright with a rename message. Likewise the
+    # theme attribute is `adw-gtk3` — there is no `adw-gtk-theme` in nixpkgs at all. Both confirmed
+    # by evaluation. qt6ct is the same package the `polkit-kde-agent` entry above already carries
+    # for its own reason; `lib.unique` in `packagesFor` makes choosing both free.
+    theming = [ pkgs.nwg-look pkgs.adw-gtk3 pkgs.qt6Packages.qt6ct ];
   };
 
   # Not a capability (no `want.portals`-shaped boolean loop reaches this) — see the comment on

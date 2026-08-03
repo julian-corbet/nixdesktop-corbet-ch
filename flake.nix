@@ -308,6 +308,12 @@
           # deliberately the opposite of keyring/lock-at-start's restart=no), and the
           # StatusNotifierItem-host warning that fires iff `trayHostAvailable = false`.
           patchbay = import ./checks/patchbay.nix { inherit pkgs; };
+          # The one check in this directory aimed at a BACKEND rather than a home-manager module,
+          # and the only one that has to be a real `nixosSystem`: everything it proves is produced
+          # by nixpkgs' own `programs/thunar.nix` and `services/desktops/gvfs.nix` downstream of
+          # the booleans modules/nixos-backend.nix sets, so a stub that merely accepted those
+          # writes would prove nothing about what they cause. See that file's own header.
+          file-manager = import ./checks/file-manager.nix { inherit pkgs nixpkgs system; };
           monitor-identity = import ./checks/monitor-identity.nix { inherit pkgs; };
           layout-geometry = import ./checks/layout-geometry.nix { inherit pkgs; };
           # `sessionModule` is passed already closed over nixhost's `probeFact`/`collectProbes`,

@@ -24,6 +24,11 @@ let
   roles = import ../lib/nixos-roles.nix { inherit lib pkgs; extraCompositors = cfg.extraCompositors; };
   want = config.nixdesktop.want or { };
   resolved = roles.packagesFor want;
+
+  # `null` both when no file manager was asked for AND when the whole profile is disabled (`want`
+  # is then `{}`), which is what keeps every block below a no-op in the disabled case without a
+  # second guard.
+  fileManager = want.fileManager or null;
 in
 {
   options.nixdesktop.nixosBackend = {
@@ -77,5 +82,39 @@ in
       enable = true;
       extraPortals = roles.portalPackages;
     };
+
+    # THE SAME GAP AS `portals`, one role over — see lib/nixos-roles.nix's `fileManagers` comment
+    # for the full account. A file manager needs gvfs to browse or mount ANYTHING, and gvfs as a
+    # package is inert: `GIO_EXTRA_MODULES` stays unset (so no uri scheme resolves at all — not
+    # smb://, not mtp://, not even trash://), `programs.fuse.enable` and `services.udisks2.enable`
+    # stay off (so nothing mounts, including a plain USB stick), and the libmtp udev rules a phone
+    # never arrive. All of that is `services.gvfs.enable` and nothing else, so it is wired here
+    # rather than smuggled into a package list.
+    #
+    # Keyed on "a file manager was named at all", not on which one: every entry in that table wants
+    # gvfs, and so does any free-form name resolved through the fallthrough.
+    services.gvfs.enable = lib.mkIf (fileManager != null) true;
+
+    # Thunar specifically. `programs.thunar.enable` is what builds the wrapper that sets
+    # `THUNARX_DIRS` — without it the `plugins` handed over here would be `.so` files nothing ever
+    # loads — what rewrites thunar's systemd user unit and its `org.xfce.*` D-Bus activation files
+    # to point at that wrapper rather than at the plugin-less binary, and what turns on
+    # `programs.xfconf.enable`, without which Thunar persists no settings at all.
+    programs.thunar = lib.mkIf (fileManager == "thunar") {
+      enable = true;
+      plugins = lib.optionals (want.fileManagerExtras or false) roles.thunarPlugins;
+    };
+
+    # The thumbnailer, without which Thunar shows a generic icon for every image, video and PDF.
+    # Unlike the two options above, this one is nearly a formality: all it does is add the package
+    # and a D-Bus service directory that the system path already is, so `pkgs.tumbler` in a package
+    # list would very nearly work. Nearly is the point — the real option is where the answer lives
+    # if that ever stops being true, and it costs nothing to use it.
+    #
+    # ffmpegthumbnailer is deliberately NOT added alongside: `pkgs.tumbler` takes it as a buildInput
+    # and ships `tumbler-ffmpeg-thumbnailer.so` already, so naming it here would install nothing but
+    # the standalone CLI. On Arch it IS a separate install (an optdepend), which is why the two
+    # backends legitimately differ on this one.
+    services.tumbler.enable = lib.mkIf (fileManager == "thunar") true;
   };
 }

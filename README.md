@@ -31,9 +31,19 @@ is the one deliberate seam between this layer and the compositor layer — see
 ["The startup contract"](#the-startup-contract) below.
 
 Neither the policy layer nor the shared-component layer installs software. That is a **platform
-backend's** job: it reads `nixdesktop.want` (including the `compositor` role) and resolves it
-into real packages for its platform. [nixarch][nixarch] ships the Arch/CachyOS backend; this
-repo's own `nixosModules.backend` is the NixOS one.
+backend's** job: it reads `nixdesktop.want` (including the `compositor` role) and turns it into a
+working desktop on its platform. [nixarch][nixarch] ships the Arch/CachyOS backend; this repo's
+own `nixosModules.backend` is the NixOS one.
+
+"A working desktop", not "a list of packages", because on NixOS those are not the same thing. A
+role whose implementation needs a real NixOS option gets that option — the NixOS backend sets
+`xdg.portal.enable`/`extraPortals` for the portal role, and `services.gvfs.enable`,
+`programs.thunar.enable` (plus its plugins) and `services.tumbler.enable` for the file-manager
+role — rather than dropping the package into `environment.systemPackages` and hoping. The
+difference is not cosmetic: gvfs as a bare package sets no `GIO_EXTRA_MODULES`, so no uri scheme
+resolves at all, and brings neither fuse nor udisks2, so nothing mounts — not even a USB stick.
+Every one of those failures is silent. On Arch the same roles genuinely are just package names,
+which is why the two backends look so different for identical policy.
 
 **Layering, end to end:** a compositor repo (nixniri/nixscroll/...) and nixdesktop are siblings, both
 consumed by a hub (a real host config), which also picks a platform backend to turn nixdesktop's
@@ -48,11 +58,12 @@ nixdesktop (policy + shared components)       ─┘            │
                                               or nixarch's Arch/CachyOS backend)
 ```
 
-The reason for the indirection is that package names are not portable (`thunar` on Arch,
-`xfce.thunar` in nixpkgs) and binary paths are worse — mate-polkit's agent lives somewhere
-different on nearly every distribution. A profile that emits package names is a profile that
-works on exactly one distro — and one compositor's config module hardcoded into the policy layer
-would be a profile that works with exactly one compositor.
+The reason for the indirection is that package names are not portable (`pcmanfm-gtk3` on Arch,
+`pkgs.pcmanfm` in nixpkgs) and binary paths are worse — mate-polkit's agent lives somewhere
+different on nearly every distribution. And, as above, some roles are not a package on every
+platform at all. A profile that emits package names is a profile that works on exactly one
+distro — and one compositor's config module hardcoded into the policy layer would be a profile
+that works with exactly one compositor.
 
 ```nix
 # consumer (a hub), pairing nixdesktop with niri via nixniri, on NixOS
@@ -80,7 +91,7 @@ would be a profile that works with exactly one compositor.
 | Module | Class | Owns |
 |---|---|---|
 | `desktop` | system-manager / NixOS | the role policy, including `compositor`; publishes `nixdesktop.want` |
-| `backend` | NixOS | resolves `nixdesktop.want` into `environment.systemPackages` (this repo's NixOS backend; nixarch ships the Arch/CachyOS one) |
+| `backend` | NixOS | resolves `nixdesktop.want` into `environment.systemPackages`, plus the real NixOS options a role needs to actually work (`xdg.portal`, `services.gvfs`, `programs.thunar`, `services.tumbler`); nixarch ships the Arch/CachyOS one |
 | `homeManagerModules.session` | home-manager | turns bar/notifier/osd/patchbay/idle/polkit/keyring into systemd user services |
 | `homeManagerModules.waybar` | home-manager | bar config + style |
 | `homeManagerModules.mako` | home-manager | notification daemon config |
@@ -144,6 +155,13 @@ and worth knowing. Every one of these is a plain option so the trade stays yours
 - **A notification daemon left installed can still win the D-Bus name** via its own
   service-activation file, even if never spawned. To hand notifications to a full shell, set
   `notifications = null` — do not merely stop spawning it.
+- **On NixOS, "installed" and "working" are different claims for half the desktop.** gvfs in a
+  package list resolves no uri scheme and mounts nothing; an unwrapped Thunar loads no thunarx
+  plugin and its D-Bus activation still names the plugin-less binary; a portal backend that is not
+  in `xdg.portal.extraPortals` is invisible to portal requests. All silent. That is why the NixOS
+  backend writes real options rather than package lists for those roles — and why
+  `nixdesktop.desktop.gvfsBackends` is a deliberate no-op on NixOS (nixpkgs builds one gvfs with
+  smb/nfs/mtp/gphoto2 compiled in) while on Arch it is four separate packages.
 
 ## noctalia
 
