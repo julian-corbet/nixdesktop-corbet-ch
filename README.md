@@ -98,6 +98,8 @@ that works with exactly one compositor.
 | `homeManagerModules.swaylock` | home-manager | lock screen appearance |
 | `homeManagerModules.nwgBar` | home-manager | power menu |
 | `homeManagerModules.eww` | home-manager | widget toolkit scaffolding |
+| `homeManagerModules.foot` | home-manager | terminal config (font, geometry, scrollback, palette) — the config for the `terminal` role, never the terminal |
+| `homeManagerModules.thunar` | home-manager | Thunar's custom actions (`uca.xml`), the one Thunar surface a config manager may own |
 | `homeManagerModules.noctalia` | home-manager | supplement to noctalia's own upstream module (see below) |
 | `homeManagerModules.startup` | home-manager | the `nixdesktop.startup` contract — see below |
 

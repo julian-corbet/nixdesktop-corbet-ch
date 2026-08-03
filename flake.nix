@@ -256,6 +256,17 @@
         nwgBar = ./home/nwg-bar.nix;
         eww = ./home/eww.nix;
 
+        # The config for the `terminal` role, never the terminal itself -- see home/foot.nix's own
+        # header for why `programs.foot` is the wrong tool on a foreign distro, and for why `font`
+        # is the one option here with no default.
+        foot = ./home/foot.nix;
+
+        # Thunar's custom actions, and ONLY those: uca.xml is the single Thunar surface a
+        # configuration manager may own. Its sibling, the xfconf-backed thunar.xml, is rewritten
+        # wholesale by a daemon that never reads it back -- see home/thunar.nix's own header for
+        # both verifications, and for why every generated action carries a stable `<unique-id>`.
+        thunar = ./home/thunar.nix;
+
         # Supplement only — see the input comment above. Import alongside
         # `noctalia.homeModules.default` from noctalia's own flake (theirs, not ours — noctalia
         # is an unrelated upstream project and uses the short spelling).
@@ -308,6 +319,15 @@
           # deliberately the opposite of keyring/lock-at-start's restart=no), and the
           # StatusNotifierItem-host warning that fires iff `trayHostAvailable = false`.
           patchbay = import ./checks/patchbay.nix { inherit pkgs; };
+          # Same shape again, for the two config-file generators whose output is not the attrset a
+          # consumer handed in but a rendered FILE: foot's ini (a palette flattened into indexed
+          # keys, booleans in foot's own yes/no spelling, one section name foot has deprecated) and
+          # Thunar's uca.xml (an XML document whose missing `<unique-id>` costs the consumer their
+          # symlink -- see home/thunar.nix's header). Text assembled by index arithmetic and string
+          # concatenation is exactly the code that stays green while emitting something the
+          # consuming program rejects.
+          foot-config = import ./checks/foot-config.nix { inherit pkgs; };
+          thunar-actions = import ./checks/thunar-actions.nix { inherit pkgs; };
           # The one check in this directory aimed at a BACKEND rather than a home-manager module,
           # and the only one that has to be a real `nixosSystem`: everything it proves is produced
           # by nixpkgs' own `programs/thunar.nix` and `services/desktops/gvfs.nix` downstream of
