@@ -324,9 +324,35 @@ let
   # plain-argv path, since there `$FOO`/`${FOO}` expansion against this unit's own `Environment=`
   # is a legitimate systemd feature a consumer may want, and there is no shell downstream to
   # double-interpret it.
+  # `/bin/sh`, ABSOLUTE, NOT bare `sh` -- verified live, corbet-server (NixOS), 2026-08-03. A
+  # persistent `--user` unit's own `ExecStart=` binary-name lookup for a NON-absolute command is
+  # systemd's OWN internal search over a small compiled-in default list (`systemd.exec(5)`), and
+  # that search NEVER consults the unit's own $PATH -- neither its `Environment=` nor the
+  # manager's dynamic environment block (`systemctl --user set-environment`/`import-environment`).
+  # Proved live, both directions: pointing the manager's own PATH at a nonexistent directory via
+  # `set-environment` changed nothing (a bare `waybar` ExecStart still failed to resolve exactly
+  # as before), and restoring the correct PATH afterward ALSO changed nothing (still failed) --
+  # PATH is simply not part of this lookup at all. On NixOS this compiled-in list resolves
+  # nothing real for a home-manager profile binary (waybar, mako, swaylock, ... all live under
+  # `/etc/profiles/per-user/<user>/bin`, never `/usr/bin`) -- but even bare `sh` ITSELF failed
+  # this exact lookup (`idle.service: Unable to locate executable 'sh'`), despite `/bin/sh`
+  # genuinely existing on disk (NixOS's own POSIX-compat symlink, confirmed present and a valid
+  # ELF-backed binary) -- so whatever this systemd build's compiled-in list nominally contains, it
+  # does not functionally include `/bin` either. An ABSOLUTE path sidesteps the lookup entirely
+  # (systemd never searches for an already-absolute ExecStart), and `/bin/sh` is the one absolute
+  # interpreter path safe to assume on BOTH planes this module serves: NixOS maintains it as a
+  # long-standing compatibility symlink specifically because so much software assumes it, and
+  # Arch (where this module's other consumers run) has always had a real `/bin/sh`. Once systemd
+  # can exec this one absolute program, everything `command` invokes AFTER it (a bare `swayidle`,
+  # `swaylock`, `pkill`) resolves through the SHELL's own ordinary libc PATH search instead of
+  # systemd's -- and that search DOES use the process's real, correct $PATH (same proof above,
+  # the other direction: a shell run this same way successfully found every home-manager-profile
+  # binary on that identical environment) -- so nothing downstream of this one hop needs to
+  # change, and the plain-argv (non-shell) path below is untouched for the same reason: it is a
+  # values problem there (see `polkitAgent.command`'s own doc), not a mechanism one.
   execStartFor = svc:
     if svc.runShell
-    then ":sh -c ${escapeExecArg svc.command}"
+    then ":/bin/sh -c ${escapeExecArg svc.command}"
     else svc.command;
 
   toSystemdUnit = _name: svc: {
@@ -442,11 +468,11 @@ let
       # unit where you'd have to guess. Neither command has a pipe or needs argument grouping, so
       # both run as plain argv (runShell defaults to false) rather than through a needless shell.
       "cliphist-text" = lib.mkDefault {
-        command = "wl-paste --type text --watch cliphist store";
+        command = cfg.clipboardHistory.textCommand;
         description = "Clipboard history watcher (text)";
       };
       "cliphist-image" = lib.mkDefault {
-        command = "wl-paste --type image --watch cliphist store";
+        command = cfg.clipboardHistory.imageCommand;
         description = "Clipboard history watcher (image)";
       };
     })
@@ -478,6 +504,26 @@ let
         description = "Lock the session at start (the one password this desk asks for)";
         serviceType = "forking";
         restart = "no";
+        # `runShell = true`, ADDED -- this is the one wellKnownServices entry that hands `lockBin`
+        # to systemd as its OWN unit's outermost ExecStart. Every other consumer of `lockBin`
+        # (`idle`'s own assembled swayidle invocation, above) only ever hands it to a process
+        # SWAYIDLE spawns, which resolves via ordinary $PATH search -- see `execStartFor`'s own
+        # header for why that distinction is exactly what makes or breaks a bare name on NixOS.
+        # Without this, `command` rendered as PLAIN ARGV, and systemd's own internal resolution
+        # of the bare `swaylock` inside it -- never $PATH-aware, see `execStartFor` -- failed
+        # outright: verified live, `lock-at-start.service: Unable to locate executable 'swaylock'`,
+        # 203/EXEC, the unit settling to "inactive (dead)" with no lock ever taken -- a live,
+        # physical-console security gap on a seated host, not merely a cosmetic failure.
+        # `lockBin` itself stays bare regardless (`lockCommand`'s own doc: "Must be a bare command
+        # name, not a path" -- the assembled idle invocation's `pkill -USR1 <lockBin>` matches on
+        # PROCESS NAME, which an absolute path would silently break) -- so the fix is routing THIS
+        # ExecStart through the same absolute-`/bin/sh` hop `idle` already gets, never changing
+        # `lockBin` itself. Re-verified end-to-end live after this change's own reasoning (a
+        # `Type=forking` transient unit given the identical shape, absolute interpreter + bare
+        # `swaylock -f` inside it): settles cleanly to "active (running)", confirming
+        # `serviceType = "forking"` here was already the right choice -- the unit's earlier
+        # "reports failed" symptom was this same 203/EXEC bug, not a second Type=/fork mismatch.
+        runShell = true;
       };
     })
     // (lib.optionalAttrs cfg.polkitAgent.enable {
@@ -1141,6 +1187,33 @@ in
 
     clipboardHistory = {
       enable = lib.mkEnableOption "cliphist watcher services (two -- see the header comment for why)";
+
+      # `textCommand`/`imageCommand`, ADDED -- until this pass these two invocations were
+      # hardcoded bare strings inside `wellKnownServices` itself, the ONLY pair in this whole
+      # module with no override hook at all (every sibling -- `bar`, `notifications`, `osd`,
+      # `polkitAgent` -- already exposes `command`). That gap was invisible as long as `wl-paste`/
+      # `cliphist` only ever needed to resolve on a platform where systemd's own bare-ExecStart
+      # search actually finds them (Arch's real `/usr/bin`); it became a real build-time need on
+      # NixOS, where they don't (see `execStartFor`'s own header for the mechanism) and a
+      # consumer has no way to hand this module an absolute path the way `polkitAgent.command`'s
+      # own doc already documents for the identical situation. Bare defaults, unchanged from
+      # before this pass, so no existing consumer's rendered unit changes.
+      textCommand = lib.mkOption {
+        type = lib.types.str;
+        default = "wl-paste --type text --watch cliphist store";
+        description = ''
+          The text-watcher invocation, plain argv (no shell) by default -- same "cheaper path"
+          shape as `bar.command`/`notifications.command`/`osd.command`. A platform whose systemd
+          cannot resolve a bare ExecStart via $PATH needs this overridden to an absolute path,
+          the same way `polkitAgent.command`'s own doc already documents for that case.
+        '';
+      };
+
+      imageCommand = lib.mkOption {
+        type = lib.types.str;
+        default = "wl-paste --type image --watch cliphist store";
+        description = "The image-watcher invocation -- see `textCommand`'s own doc, identical shape.";
+      };
     };
 
     idleAndLock = {
