@@ -137,7 +137,7 @@ let
   });
 
   # ── BOOTSTRAP FIXTURES ───────────────────────────────────────────────────────────────────────
-  fakeKeyringPath = "/home/richc/.local/share/keyrings/login.keyring";
+  fakeKeyringPath = "/home/alice/.local/share/keyrings/login.keyring";
   fakeOo7CliCommand = "/nix/store/fake-oo7/bin/oo7-cli";
 
   # The full, correctly-nested chain: oo7 the provider, its credential, and the bootstrap step

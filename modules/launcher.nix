@@ -5,13 +5,12 @@
 # WHY THIS FILE HAS TO EXIST SEPARATELY, AND WHY IT TOOK THIS LONG TO WRITE. Every other module in
 # this repo produces DATA — an identity string, a resolved rectangle, a permitted/denied device
 # NAME list. None of that runs anything. This estate currently has THREE desktops with three
-# different private answers to "how do I actually launch a compositor" (archlxc's hand-written
-# `niri-seat.service`, the elitebook's stock `--user niri.service`, devhome not built yet) because
-# nobody had written the one mechanism down. See
-# `knowledge/hosts/shared/desktop-session-model.md` §7.2 for the elitebook's live, silent
-# consequence of skipping this: its polkit agent runs but never registers, because
-# `niri-session -l` re-forks niri under `user@1000.service`, and no privileged GUI prompt on that
-# machine has ever worked as a result.
+# different private answers to "how do I actually launch a compositor" (the workstation's
+# hand-written `niri-seat.service`, the laptop's stock `--user niri.service`, primary not built
+# yet) because nobody had written the one mechanism down. See the consuming private config for
+# the laptop's live, silent consequence of skipping this: a stock `--user niri.service` never
+# registers its polkit agent, because `niri-session -l` re-forks niri under `user@1000.service`,
+# and no privileged GUI prompt on that machine has ever worked as a result.
 #
 # THE ONE FORCED FACT THIS FILE IS BUILT AROUND: SEATING IS CGROUP-STRUCTURAL, NOT ENVIRONMENTAL.
 # `sd_pid_get_session()` → `cg_path_get_session()` requires the process's OWN cgroup path to
@@ -22,8 +21,8 @@
 # `PAMName=` + `User=` on a SYSTEM unit, which `systemd.exec(5)` documents as migrating the unit's
 # main process into its own session scope during PAM session opening — this is exactly what
 # gdm/sddm/greetd do internally, and it is exactly what
-# `infra/hosts/archlxc/niri-session.nix` (read-only precedent for this file — see its own header)
-# proved live on this estate for one host, by hand, before this module generalised it.
+# the workstation's own hand-rolled `niri-seat.service` (read-only precedent for this file — see
+# its own header) proved live on this estate for one host, by hand, before this module generalised it.
 #
 # ── DESIGN A: AUTOLOGIN EVERYWHERE, NO GREETER, EVER — ONE PASSWORD ON EVERY PATH, NEVER TWO ─────
 #
@@ -78,7 +77,7 @@
 # inside an `ExecStartPre=+` step that mutated the unit's own `DeviceAllow=` via `systemctl
 # set-property` — because at the time a name could only ever become a real device path against
 # live sysfs, and eval time had nothing stable to build one from. Adversarial review (measured live
-# on corbet-server) found that shape genuinely broken in three independent ways: `DevicePolicy=
+# on the server) found that shape genuinely broken in three independent ways: `DevicePolicy=
 # strict` applies to the cgroup BEFORE any ExecStartPre runs, so an empty starting `DeviceAllow=`
 # deadlocks the unit before the mutating step ever execs (`status=208/STDIN`); `strict` itself
 # admits none of `/dev/null`/`/dev/ptmx`/`/dev/tty*`, which a terminal emulator needs regardless of
@@ -116,9 +115,9 @@
 #
 # A seat that HAS a VT requires `XDG_VTNR` set to it: omitting it makes `pam_systemd` reject
 # `CreateSession` outright with `org.varlink.service.InvalidParameter` — measured, this exact
-# failure happened live on devhome. A seat with NO VT must NOT be given `XDG_VTNR` at all — there
+# failure happened live on primary. A seat with NO VT must NOT be given `XDG_VTNR` at all — there
 # is no VT for it to claim, and stating one it does not own is simply false. Verified live: the
-# arch LXC has no `/dev/tty0` at all, yet `loginctl` there DOES report a real `seat0` with a
+# workstation has no `/dev/tty0` at all, yet `loginctl` there DOES report a real `seat0` with a
 # genuine user session sitting on it — the seat is real, just not VT-backed.
 # `nixdesktop.sessions.<name>.vt` (modules/session.nix — a number, or `null`) is the one fact this
 # unit reads to get both directions right: see the `Environment` block in `mkSeatedUnit` below for
@@ -131,9 +130,9 @@
 # An earlier revision of this repo's flake.nix claimed a session "will grow a system unit with
 # `PAMName=`/`User=` ... none of which system-manager can implement" and kept both `session` and
 # `launcher` NixOS-only on that basis. That claim was FALSE, and there is a live counter-example on
-# this estate: `infra/hosts/archlxc/niri-session.nix`, composed into `systemConfigs.archlxc` — a
-# system-manager target, not NixOS — declares `systemd.services.niri-seat` with `PAMName = "login"`,
-# `User = "richc"`, a real `Environment` list and `Restart`, and has been running for months.
+# this estate: the workstation's own hand-rolled config, composed into a system-manager target,
+# not NixOS — declares `systemd.services.niri-seat` with `PAMName = "login"`,
+# `User = "alice"`, a real `Environment` list and `Restart`, and has been running for months.
 # system-manager manages real systemd units; a unit property like `PAMName=` is just text in a unit
 # file, and system-manager's `systemd.services` renders through the IDENTICAL nixpkgs
 # `systemdUtils.lib.serviceToUnit` code NixOS itself calls (confirmed by reading
@@ -255,7 +254,7 @@ let
   # `/dev/random`, `/dev/urandom` for free (systemd.resource-control(5)) -- what it does NOT admit,
   # and what a graphical session concretely needs on top, is a way for whatever terminal emulator
   # this session's user launches to allocate a pty, and a way for libinput to read the raw
-  # peripherals. Verified live against `/proc/devices` on corbet-server (2026-07-31), so this list
+  # peripherals. Verified live against `/proc/devices` on the server (2026-07-31), so this list
   # names exactly what is actually registered rather than a guess:
   #
   #   1 mem      -- covers null/zero/full/random/urandom; already granted by `closed` above, not
@@ -432,8 +431,7 @@ let
       after = [ "systemd-user-sessions.service" ];
 
       # A wedged or crash-looping compositor must not hot-loop forever against a real GPU --
-      # matches the precedent's own reasoning (infra/hosts/archlxc/niri-session.nix) rather than
-      # inventing new numbers.
+      # matches the workstation precedent's own reasoning rather than inventing new numbers.
       startLimitIntervalSec = 60;
       startLimitBurst = 5;
 
@@ -489,15 +487,15 @@ let
           "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         ]
         # THE VT FACT, both directions -- see this file's header. `session.vt` (modules/session.nix)
-        # is `null` on every seat this estate has ever measured with no VT (the arch LXC); a number
-        # on every seat it has measured WITH one (devhome, VT 1). Neither branch is a guess:
+        # is `null` on every seat this estate has ever measured with no VT (the workstation); a
+        # number on every seat it has measured WITH one (primary, VT 1). Neither branch is a guess:
         # omitting `XDG_VTNR` on a VT-backed seat is what measured live as `pam_systemd` refusing
-        # `CreateSession` with `org.varlink.service.InvalidParameter` on devhome; SETTING it on a
+        # `CreateSession` with `org.varlink.service.InvalidParameter` on primary; SETTING it on a
         # VT-less seat would claim a VT that plainly does not exist there.
         ++ lib.optional (session.vt != null) "XDG_VTNR=${toString session.vt}"
         ++ lib.optional (session.renderer != "auto") "WLR_RENDERER=${session.renderer}"
         # See modules/session.nix's own `seatdVtBound` doc: `false` means this seat has no VT for a
-        # VT-bound seatd to follow -- measured live on the arch LXC, whose `/dev/tty0` does not
+        # VT-bound seatd to follow -- measured live on the workstation, whose `/dev/tty0` does not
         # exist at all (only `/dev/console`, a pty). Device access there rests entirely on
         # `requiredGroups` instead -- see the assertion below that actually checks the host grants
         # them.
@@ -542,7 +540,7 @@ let
       # sits `inactive (dead)` for the entire session (`RefuseManualStart=yes` on the target
       # itself forbids fixing this by hand, too -- a REAL shipped systemd unit,
       # `/usr/lib/systemd/user/graphical-session.target`, not this repo's own invention). Measured
-      # live, CORBET-ELITEBOOK and corbet-archlxc, 2026-08-02: an empty screen, a perfectly
+      # live, on the laptop and the workstation, 2026-08-02: an empty screen, a perfectly
       # healthy compositor underneath it, and every home/session.nix component ordered
       # `After=graphical-session.target` -- the bar, notifications, the idle daemon, clipboard
       # history, the polkit agent, the keyring -- dead for the whole session, with nothing
@@ -582,7 +580,7 @@ let
       #
       # `--machine="${session.user}@.host" --user`, not a bare `--user`, for the identical reason
       # `+` is required: this command now runs as root with NO `XDG_RUNTIME_DIR`/
-      # `DBUS_SESSION_BUS_ADDRESS` of its own to fall back on (root's, not richc's) -- confirmed
+      # `DBUS_SESSION_BUS_ADDRESS` of its own to fall back on (root's, not alice's) -- confirmed
       # live: a bare `systemctl --user` here fails immediately with "Failed to connect to user
       # scope bus via local transport: $DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not
       # defined", and that very error message names the fix used here. `--machine=<user>@.host`
@@ -735,7 +733,7 @@ let
         no per-user-manager unit surface anywhere in it. A headless session needs exactly that
         surface (a `--user` unit, scoped by `unitConfig.ConditionUser`); a seated session does
         not -- it is a SYSTEM unit with `PAMName=`/`User=`, which system-manager renders
-        identically to the NixOS plane (see `infra/hosts/archlxc/niri-session.nix`'s own
+        identically to the NixOS plane (see the workstation's own hand-rolled
         `niri-seat.service` for the live proof, months of uptime on this exact mechanism).
         Run this session on a NixOS host via `nixosModules.launcher` instead, or remove it from a
         system-manager host's `nixdesktop.sessions`.
@@ -1128,7 +1126,7 @@ in
       # So this reaches for the mechanism ONE LAYER BELOW `users.users.<name>.linger` instead of
       # trying to gate it: `loginctl enable-linger USER` does exactly one thing on disk -- create
       # an empty marker file at `/var/lib/systemd/linger/<username>` (verified live on
-      # corbet-server: `ls -la /var/lib/systemd/linger/` shows a zero-byte `richc`).
+      # the server: `ls -la /var/lib/systemd/linger/` shows a zero-byte `alice`).
       # `systemd-logind` reads that directory to decide which users' `user@<uid>.service` survives
       # across reboots; it has never cared whether `<username>` is declared in `users.users` at
       # all. `systemd.tmpfiles.rules` writing that same file declaratively (`f`, create-if-absent)

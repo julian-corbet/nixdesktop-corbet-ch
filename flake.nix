@@ -79,7 +79,7 @@
       # `launcherModuleFor plane`, NOT a single `launcherModule` value, because modules/launcher.nix
       # itself is curried on `plane` ("nixos" | "system-manager") — see that file's own header
       # for the full reasoning (system-manager renders `systemd.services`/`PAMName=`/`DeviceAllow=`
-      # identically to NixOS, proven live by `infra/hosts/archlxc/niri-session.nix`'s own
+      # identically to NixOS, proven live by the workstation's own hand-rolled
       # `niri-seat.service`, but has no `systemd.user.services` anywhere in its module tree — so the
       # one real divergence, `delivery = "headless"`, has to be selected before either module value
       # is handed to a consumer, never decided by a `config`-derived condition inside one shared
@@ -113,7 +113,7 @@
       # ── IDENTITY AND GEOMETRY ─────────────────────────────────────────────────────────────
       # The two tables the compositor repos read. Pure options and assertions — no `pkgs`, no
       # units, nothing platform-specific — so both are offered on BOTH planes, and that is not
-      # symmetry for its own sake: the Arch boxes (archlxc, the elitebook) run system-manager and
+      # symmetry for its own sake: the Arch boxes (the workstation, the laptop) run system-manager and
       # have exactly the same monitors on exactly the same desks as the NixOS ones. A registry
       # that only existed on one plane would be re-typed on the other, which is the duplication
       # `monitors` exists to delete.
@@ -143,7 +143,7 @@
       # over that data (contested seats, an unresolvable environment, a headless session that
       # isn't pixman). None of it touches `pkgs`, `systemd`, or `users` at all, which is exactly
       # the same shape `monitors`/`layouts` above already have, and exactly why this is offered on
-      # BOTH planes too: the Arch boxes (archlxc, the elitebook) declare sessions with precisely
+      # BOTH planes too: the Arch boxes (the workstation, the laptop) declare sessions with precisely
       # the same `delivery`/`seat`/`environment` vocabulary as a NixOS host, and a registry that
       # only existed on one plane would force the other to re-type it.
       #
@@ -176,7 +176,7 @@
       # `User=`, `DevicePolicy=`/`DeviceAllow=`) renders through the identical nixpkgs unit code on
       # system-manager as on NixOS — confirmed by reading numtide/system-manager's own
       # `nix/modules/systemd.nix`, not assumed, and proven live for months by
-      # `infra/hosts/archlxc/niri-session.nix`'s own hand-written `niri-seat.service` on exactly
+      # the workstation's own hand-written `niri-seat.service` on exactly
       # that plane. Only `delivery = "headless"` (a `--user` unit) has no system-manager
       # equivalent — its module tree has no `systemd.user.services`, or any per-user-manager unit
       # surface, anywhere — and modules/launcher.nix degrades that case to a named, loud build
@@ -212,8 +212,8 @@
       #     `systemManagerModules`, the same shared-value pattern `monitors`/`layouts`/`session`
       #     above already use.
       #   - `oo7KeyringBootstrap` needs `systemd.user.services` — a `--user` unit — which NixOS can
-      #     render directly at system level (no home-manager required; `hosts/nixnas-devhome.nix`
-      #     in the infra checkout is the live proof) but system-manager structurally cannot render
+      #     render directly at system level (no home-manager required; this estate's own bare
+      #     NixOS host in the infra checkout is the live proof) but system-manager structurally cannot render
       #     AT ALL (modules/launcher.nix's own header states this as a read-from-source fact: its
       #     module tree has no `systemd.user.services` anywhere). So this one is `nixosModules`
       #     ONLY — a system-manager/Arch host reaches for `home/session.nix`'s own

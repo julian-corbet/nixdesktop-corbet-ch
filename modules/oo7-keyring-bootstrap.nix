@@ -4,8 +4,8 @@
 # NixOS-ONLY, deliberately — read "WHY THIS IS THE ONE GENUINELY IRREDUCIBLE SPLIT" below before
 # reaching for this on a system-manager host.
 #
-# ── THE GAP, MEASURED, NOT ASSUMED (ported from `hosts/nixnas-devhome.nix`'s own "The bootstrap
-# gap" section in the infra checkout — the live account this module generalises) ─────────────────
+# ── THE GAP, MEASURED, NOT ASSUMED (ported from this module's own private per-host predecessor's
+# "The bootstrap gap" section in the infra checkout — the live account this module generalises) ──
 # On a data directory with no keyring file present, a correctly-credentialed oo7-daemon logs
 # "Unlocking session keyring with user's systemd credentials" (it DID read the credential),
 # immediately followed by "No default collection found, creating 'Login' keyring" / "Keyring file
@@ -32,8 +32,8 @@
 # units in the SAME manager instance (see `home/session.nix`'s own `loadCredentialEncrypted` option
 # doc and `modules/launcher.nix`'s header for the identical cross-manager-boundary fact). NixOS can
 # render `systemd.user.services` DIRECTLY at the system level, with no home-manager involved at all
-# — this module is exactly that, and `hosts/nixnas-devhome.nix` (a bare NixOS system with no
-# home-manager composed for its user anywhere) is the live proof it works. system-manager CANNOT:
+# — this module is exactly that, and this estate's own bare NixOS system with no home-manager
+# composed for its user anywhere is the live proof it works. system-manager CANNOT:
 # `modules/launcher.nix`'s own header states this as a read-from-source fact, not an assumption —
 # "system-manager renders `systemd.services`... identically to NixOS... [but] has no
 # `systemd.user.services` anywhere in its module tree" — and `checks/launcher.nix`'s own
@@ -87,7 +87,7 @@ in
 
     keyringPath = lib.mkOption {
       type = lib.types.str;
-      example = "/home/richc/.local/share/keyrings/login.keyring";
+      example = "/home/alice/.local/share/keyrings/login.keyring";
       description = ''
         The keyring FILE to create if (and only if) it does not exist yet — the exact well-known
         path oo7-daemon's own startup scan looks for. NO DEFAULT: the filename is not fixed across
@@ -129,14 +129,14 @@ in
 
     credentialPath = lib.mkOption {
       type = lib.types.str;
-      example = "/home/richc/.config/credstore.encrypted/oo7.keyring-encryption-password";
+      example = "/home/alice/.config/credstore.encrypted/oo7.keyring-encryption-password";
       description = ''
         Where the encrypted credential blob lives on disk — must be the SAME path
         `nixdesktop.oo7.credential.path` (or whatever else provisioned it) actually wrote to. The
         two modules are not cross-wired automatically: a consumer using both states this value
-        once in each place, the same deliberate byte-identical-by-hand duplication
-        `hosts/archlxc/keyring.nix`'s own header already documents for its sibling home-manager
-        file, and for the identical reason — a NixOS system module and this repo's own
+        once in each place, the same deliberate byte-identical-by-hand duplication this module's
+        own private per-host sibling home-manager file already documents in its header,
+        and for the identical reason — a NixOS system module and this repo's own
         `nixdesktop.oo7.credential` module are two separate option trees with no shared state to
         read the other's value back from, so restating it explicitly beats an implicit coupling
         neither side could verify.
@@ -199,11 +199,12 @@ in
 
       # Pulls the bootstrap unit in front of the daemon unit -- an ordinary same-manager,
       # user-to-user edge (both units live in `user@<uid>.service`), unlike the cross-boundary
-      # problem a SYSTEM unit gating a --user one would be (see `hosts/nixnas-devhome.nix`'s own
-      # "ALSO wait for the wrapper itself" section in the infra checkout for that different, harder
-      # case, which this module does not attempt to solve -- a host racing its own autologin unit
-      # against `suid-sgid-wrappers.service` needs its own host-specific fix, same as devhome's own
-      # file states plainly rather than papering over). `wants` (soft), not `requires`: a
+      # problem a SYSTEM unit gating a --user one would be (see this module's own private per-host
+      # predecessor's "ALSO wait for the wrapper itself" section in the infra checkout for that
+      # different, harder case, which this module does not attempt to solve -- a host racing its
+      # own autologin unit against `suid-sgid-wrappers.service` needs its own host-specific fix,
+      # same as that predecessor's own file states plainly rather than papering over). `wants`
+      # (soft), not `requires`: a
       # provisioning hiccup should degrade to a daemon with nothing to unlock, visibly, not take a
       # session down.
       systemd.user.services."${cfg.daemonServiceName}" = {

@@ -5,10 +5,9 @@
 # PROVIDER" and its `credential` sub-option's own doc): a home-manager module runs AS THE USER, and
 # generating this credential means writing a root-owned encryption operation whose OUTPUT then has
 # to be handed over (`chown`) to a user who is not the one running it. That is inherently a
-# system-layer act on every host that has ever needed it (`hosts/nixnas-devhome.nix`,
-# `hosts/archlxc/keyring.nix`, `hosts/elitebook/keyring.nix` in the infra checkout this ports
-# from), and every one of those three hosts hand-rolled it — this file is the mechanism, so the
-# next host only supplies values.
+# system-layer act on every host that has ever needed it, and every one of those hosts hand-rolled
+# it independently, in its own private per-host config in the infra checkout this ports from —
+# this file is the mechanism, so the next host only supplies values.
 #
 # ONE MODULE, BOTH PLANES, NO SPLIT NEEDED. Unlike the keyring-bootstrap half of this same problem
 # (`modules/oo7-keyring-bootstrap.nix`, NixOS-only — see that file's own header for why), this one
@@ -22,9 +21,9 @@
 # `systemd.services` and still not need a plane split.
 #
 # ── THE THREE MEASURED FACTS THIS SCRIPT ENCODES (all cost real debugging time on a live host;
-# see hosts/nixnas-devhome.nix's own "oo7: values the keyring block below needs by name" and
-# "CREDENTIAL DELIVERY, MEASURED, NOT ASSUMED" comments in the infra checkout for the full account
-# of each, including exact error text) ──────────────────────────────────────────────────────────
+# see this module's own private per-host predecessor's "oo7: values the keyring block below needs
+# by name" and "CREDENTIAL DELIVERY, MEASURED, NOT ASSUMED" comments in the infra checkout for the
+# full account of each, including exact error text) ─────────────────────────────────────────────
 #
 #   1. THE CREDENTIAL MUST LIVE IN THE USER'S OWN `~/.config/credstore.encrypted/`, NEVER THE
 #      SYSTEM-WIDE `/etc/credstore.encrypted/`. A `--user` unit's `ImportCredential=`/
@@ -165,7 +164,7 @@ in
 
     user = lib.mkOption {
       type = lib.types.str;
-      example = "richc";
+      example = "alice";
       description = ''
         The account whose own `--user` manager will later import this credential. Also names the
         rendered service (`oo7-credential-provision-<user>`) and is resolved to a live uid AT
@@ -177,7 +176,7 @@ in
 
     path = lib.mkOption {
       type = lib.types.str;
-      example = "/home/richc/.config/credstore.encrypted/oo7.keyring-encryption-password";
+      example = "/home/alice/.config/credstore.encrypted/oo7.keyring-encryption-password";
       description = ''
         Where the user-scoped encrypted blob lands. MUST be under that user's own
         `~/.config/credstore.encrypted/`, never `/etc/credstore.encrypted/` — see the header

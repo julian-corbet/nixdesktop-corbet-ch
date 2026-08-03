@@ -24,8 +24,8 @@
 #
 # ── A SEATED SESSION MAY OR MAY NOT HAVE A VT, AND THAT IS A SECOND, INDEPENDENT HARDWARE FACT ──
 #
-# There are TWO delivery classes above, not three. The arch LXC is not a special third class -- it
-# is an ordinary SEATED session whose seat happens to have no VT. Verified live: `loginctl` inside
+# There are TWO delivery classes above, not three. The workstation is not a special third class --
+# it is an ordinary SEATED session whose seat happens to have no VT. Verified live: `loginctl` inside
 # the container reports a real `seat0` and a genuine `class=user` session sitting on it (an earlier
 # note claiming containers have no seat at all was WRONG) -- but `/dev/tty0` does not exist there
 # at all (`/dev/console` does, and it is a pty, not a VT). `vt`, below, is what turns that into a
@@ -133,7 +133,7 @@ let
   #   "exclusive" first -- a device this environment owns outright is by definition the one it is
   #   meant to master -- then "shared", each alphabetically for determinism.
   #
-  # On this estate that resolves devhome to `[ "ast" ]`: `gpu.ast.access = "exclusive"` is the BMC
+  # On this estate that resolves primary to `[ "ast" ]`: `gpu.ast.access = "exclusive"` is the BMC
   # framebuffer it drives, `gpu.amd.access = "none"` keeps the RX 6800 out entirely.
   permittedFor = envName:
     if envName == null then [ ] else
@@ -184,7 +184,7 @@ let
 
       user = mkOption {
         type = types.str;
-        example = "richc";
+        example = "alice";
         description = ''
           The POSIX user this session runs as, BY NAME. Never a uid, and never a uid anywhere
           downstream either: the consumer resolves this name through
@@ -255,12 +255,12 @@ let
           For a seated session, this is the fact that actually distinguishes the two shapes a seat
           on this estate can take -- a HARDWARE fact, never a style choice:
 
-          A NUMBER (the laptop; devhome on the server, which owns VT 1) means the seat is
+          A NUMBER (the laptop; primary on the server, which owns VT 1) means the seat is
           VT-BACKED: `loginctl`'s ordinary mechanics apply, seatd follows VT-switch ioctls, and
           logind's active-session ACL (`uaccess`) is what grants device access to whoever is
           active on that VT. `seatdVtBound`/`requiredGroups` below are both irrelevant here.
 
-          `null` (the default, and the arch LXC's only honest answer) means the seat is REAL but
+          `null` (the default, and the workstation's only honest answer) means the seat is REAL but
           has NO VT to be backed by -- see this file's header for the measured `loginctl`/
           `/dev/tty0` facts behind that. A VT-bound seatd never activates a session with nothing to
           switch to, and the compositor's libinput backend then times out with "couldn't create
@@ -335,7 +335,7 @@ let
       environment = mkOption {
         type = types.nullOr types.str;
         default = null;
-        example = "devhome";
+        example = "primary";
         description = ''
           A `nixhost.environments.<name>` -- and THE DEVICE CLAIM LIVES THERE, not here. Every GPU
           this session may touch is `resources.gpu.<name>.access != "none"` on that environment;
@@ -563,20 +563,20 @@ in
     example = lib.literalExpression ''
       {
         # The one seated session on the BMC framebuffer: the RX 6800 is `access = "none"` in
-        # nixhost's devhome environment, so it lands in deniedDevices and niri is told to ignore it.
-        devhome = {
+        # nixhost's primary environment, so it lands in deniedDevices and niri is told to ignore it.
+        primary = {
           compositor = "scroll";
-          user = "richc";
+          user = "alice";
           delivery = "seated";
-          environment = "devhome";
+          environment = "primary";
           layout = "console";
           renderer = "pixman";
-          vt = 1; # devhome owns VT 1 on the server -- a VT-backed seat, unlike the arch LXC's.
+          vt = 1; # primary owns VT 1 on the server -- a VT-backed seat, unlike the workstation's.
         };
         # Its headless sibling -- the browser leg -- on no seat and no device at all.
-        devhome-remote = {
+        primary-remote = {
           compositor = "scroll";
-          user = "richc";
+          user = "alice";
           delivery = "headless";
           renderer = "pixman";
         };

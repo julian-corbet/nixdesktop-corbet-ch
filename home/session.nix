@@ -212,7 +212,7 @@ let
   # matching that name and imports it if present, silently skipping it otherwise. This module's own
   # `credential` option (see below) renders `LoadCredentialEncrypted=<id>:<path>` instead -- an
   # explicit id+path, not a glob over a search path -- because that is the EXACT directive the live
-  # proof this pass implements actually exercised end-to-end on corbet-server (`systemd-run --user`
+  # proof this pass implements actually exercised end-to-end on the server (`systemd-run --user`
   # with `LoadCredentialEncrypted=` against a `--user --uid=1000`-scoped blob), and this module has
   # no way to guarantee a consumer's credential lands in one of `ImportCredential=`'s well-known
   # directories rather than wherever their own provisioning chose to put it. A consumer who DOES
@@ -270,10 +270,11 @@ let
   # live: it talks directly to the keyring FILE and never touches D-Bus or a Prompt at all.
   #
   # A plain shell one-liner (`command` + `runShell = true`, the existing mechanism above), NOT a
-  # `pkgs.writeShellScript` -- unlike `hosts/nixnas-devhome.nix`'s own NixOS-plane version of this
-  # identical mechanism, which can and does reach for `pkgs.writeShellScript` because that file is
-  # not this repo. This module is home-manager-only and, per the file header ("Nothing here
-  # installs anything ... package names and binary paths are platform-specific"), never wraps a
+  # `pkgs.writeShellScript` -- unlike this module's own private per-host NixOS-plane sibling's
+  # version of this identical mechanism, which can and does reach for `pkgs.writeShellScript`
+  # because that file is not this repo. This module is home-manager-only and, per the file
+  # header ("Nothing here installs anything ... package names and binary paths are
+  # platform-specific"), never wraps a
   # store-path script around a package this repo has never named -- the same reasoning
   # `execStartFor`'s own `runShell` branch already exists to serve for `idle`/`lock-at-start`
   # above, reused here rather than inventing a second code path.
@@ -296,9 +297,8 @@ let
     # (this unit's own `loadCredentialEncrypted` below reuses the SAME credential the daemon
     # itself loads -- one credential, two readers, see that option's own header). Nested double
     # quotes inside `$( )` are ordinary POSIX shell (the inner pair opens its own quoting context),
-    # not an escaping bug -- proved live on three hosts already using this exact idiom
-    # (`hosts/nixnas-devhome.nix`, `hosts/archlxc/oo7-credential-ensure.sh`,
-    # `hosts/elitebook/oo7-credential-ensure.sh`, all in the infra checkout this ports from).
+    # not an escaping bug -- proved live on three hosts already using this exact idiom, each in
+    # its own private per-host config in the infra checkout this ports from.
     + " -s \"$(cat \"$CREDENTIALS_DIRECTORY/${credentialName}\")\""
     + " repair";
 
@@ -324,7 +324,7 @@ let
   # plain-argv path, since there `$FOO`/`${FOO}` expansion against this unit's own `Environment=`
   # is a legitimate systemd feature a consumer may want, and there is no shell downstream to
   # double-interpret it.
-  # `/bin/sh`, ABSOLUTE, NOT bare `sh` -- verified live, corbet-server (NixOS), 2026-08-03. A
+  # `/bin/sh`, ABSOLUTE, NOT bare `sh` -- verified live, the server (NixOS), 2026-08-03. A
   # persistent `--user` unit's own `ExecStart=` binary-name lookup for a NON-absolute command is
   # systemd's OWN internal search over a small compiled-in default list (`systemd.exec(5)`), and
   # that search NEVER consults the unit's own $PATH -- neither its `Environment=` nor the
@@ -716,7 +716,7 @@ in
           conditionPathExists = lib.mkOption {
             type = lib.types.nullOr lib.types.str;
             default = null;
-            example = "!/home/richc/.local/share/keyrings/login.keyring";
+            example = "!/home/alice/.local/share/keyrings/login.keyring";
             description = ''
               systemd's `ConditionPathExists=` (`Unit.ConditionPathExists` in the rendered unit).
               `null`, the default, omits the directive entirely -- most components here have
@@ -729,9 +729,10 @@ in
               syntax (`man 5 systemd.unit`) -- so `"!<path>"` reads as "run only when `<path>` is
               ABSENT", and a later start with the path present is marked "skipped" (not failed),
               not merely "guarded by a shell-level `[ -e ... ]` check that still counts as a
-              successful run every time". This is the identical mechanism `hosts/nixnas-devhome.nix`
-              (plain NixOS, no home-manager) already uses via its own `unitConfig.ConditionPathExists`
-              -- this option is the home-manager-module equivalent, not a different idea.
+              successful run every time". This is the identical mechanism this module's own private
+              per-host NixOS-plane sibling (plain NixOS, no home-manager) already uses via its own
+              `unitConfig.ConditionPathExists` -- this option is the home-manager-module
+              equivalent, not a different idea.
             '';
           };
 
@@ -843,8 +844,8 @@ in
               the "obvious" way -- `systemd-creds encrypt --with-key=host <input> <path>`, no scope
               flag -- fails hard when loaded into a systemd `--user` unit: `Scope mismatch` /
               `Failed to set up credentials: Wrong medium type`, exit 243/CREDENTIALS. Verified live
-              on corbet-server (richc/uid 1000, via SSH from CORBET-ELITEBOOK): a `systemd-run
-              --user` unit given exactly this option's own directive, fed a host-key-encrypted blob
+              on the server, via SSH from a second host: a `systemd-run --user` unit given exactly
+              this option's own directive, fed a host-key-encrypted blob
               produced WITHOUT `--user --uid=`, failed with precisely that error; re-encrypting the
               identical plaintext with `systemd-creds encrypt --user --uid=1000 --with-key=host ...`
               -- a USER-SCOPED blob -- and changing nothing else made the same unit work. This
@@ -1111,7 +1112,7 @@ in
     # ── seatedNiriProxy: THE BRIDGE A SEATED SESSION NEEDS AND EVERY OTHER NIRI SESSION ALREADY
     # HAS FOR FREE ──────────────────────────────────────────────────────────────────────────────
     #
-    # THE GAP, MEASURED LIVE (CORBET-ELITEBOOK, corbet-archlxc, 2026-08-02). Every component
+    # THE GAP, MEASURED LIVE (the laptop and the workstation, 2026-08-02). Every component
     # above -- bar, notifications, osd, patchbay, the ones below -- is ordered
     # `After=graphical-session.target`, exactly per this file's own header ("THE ORDERING
     # TARGET"): niri's PACKAGED `niri.service` (`BindsTo=graphical-session.target` +
@@ -1371,13 +1372,13 @@ in
 
         # ── renderDaemon: WHETHER THIS MODULE OWNS THE DAEMON UNIT AT ALL ─────────────────────────
         #
-        # THE BUG THIS OPTION EXISTS TO NAME, MEASURED LIVE (corbet-archlxc, 2026-08-03). The
+        # THE BUG THIS OPTION EXISTS TO NAME, MEASURED LIVE (the workstation, 2026-08-03). The
         # pacman `oo7` package installs its OWN `--user` unit at the identical bare name this
         # module's own `keyring` entry uses for a DIFFERENT unit
         # (`/usr/lib/systemd/user/oo7-daemon.service`, `[Install] WantedBy=default.target`,
         # `ImportCredential=oo7.keyring-encryption-password` -- the exact shipped text is quoted in
         # full in the keyring assembly's own header comment, above). On a host that never masks
-        # that vendor unit (unlike `home/richc/hosts/elitebook.nix`'s own deliberate
+        # that vendor unit (unlike this module's own private per-host predecessor's deliberate
         # `mkOutOfStoreSymlink "/dev/null"` mask -- see that file's header for why THAT host's
         # shape is different, and correct, on its own terms), the vendor unit wins
         # `org.freedesktop.secrets` every single time: `default.target` is the base target a
@@ -1403,14 +1404,15 @@ in
         #
         # `true`, the default, is unchanged behaviour for every host that does not opt out: this
         # module renders its own `keyring.service` exactly as it always has, which remains the
-        # RIGHT shape both for a platform with no working vendor unit of its own (`hosts/nixnas-
-        # devhome.nix`'s NixOS-plane sibling module, `modules/oo7-keyring-bootstrap.nix`, draws the
+        # RIGHT shape both for a platform with no working vendor unit of its own (this module's
+        # own private per-host NixOS-plane sibling, `modules/oo7-keyring-bootstrap.nix`, draws the
         # identical "this module never declares the daemon" line for the identical reason, but
         # NixOS's `services.oo7.enable` -- a SEPARATE module this repo does not own -- is what
-        # supplies devhome's actual daemon, always; there is no "renderDaemon" toggle needed on
+        # supplies primary's actual daemon, always; there is no "renderDaemon" toggle needed on
         # that plane because the daemon was never this module's to render in the first place) and
-        # for a host that, like `home/richc/hosts/elitebook.nix`, has deliberately masked the
-        # vendor unit and wants THIS module's own daemon to be the one and only implementation.
+        # for a host that, like this module's own private per-host predecessor, has deliberately
+        # masked the vendor unit and wants THIS module's own daemon to be the one and only
+        # implementation.
         #
         # WHY NOT nixarch's `modules/foreign-service.nix` ("pacman owns the binary and the unit,
         # Nix owns only the config, never render a second unit" -- the identical DOCTRINE this
@@ -1500,9 +1502,9 @@ in
           # ── bootstrap: THE FIRST-KEYRING GAP, MEASURED, NOT ASSUMED CLOSED BY THE CREDENTIAL ──
           #
           # THE GAP. A daemon that can read its unlock credential still cannot conjure a keyring to
-          # unlock out of nothing. Measured live (`hosts/nixnas-devhome.nix`, the infra checkout
-          # this ports from, before nixdesktop carried any answer of its own): on a data directory
-          # with no keyring file present, oo7-daemon 0.6.0 logs `Unlocking session keyring with
+          # unlock out of nothing. Measured live (this module's own private per-host predecessor in
+          # the infra checkout this ports from, before nixdesktop carried any answer of its own):
+          # on a data directory with no keyring file present, oo7-daemon 0.6.0 logs `Unlocking session keyring with
           # user's systemd credentials` (it DID read the credential), immediately followed by `No
           # default collection found, creating 'Login' keyring` / `Keyring file not found, creating
           # a new one` / `Created default 'Login' collection (locked)` -- i.e. the credential is
@@ -1560,7 +1562,7 @@ in
 
             keyringPath = lib.mkOption {
               type = lib.types.str;
-              example = "/home/richc/.local/share/keyrings/login.keyring";
+              example = "/home/alice/.local/share/keyrings/login.keyring";
               description = ''
                 The keyring FILE to create if (and only if) it does not exist yet -- the exact
                 well-known path oo7-daemon's own startup scan looks for. NO DEFAULT: the FILENAME

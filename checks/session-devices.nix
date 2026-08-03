@@ -77,10 +77,10 @@ let
 
   # ── Fixtures ────────────────────────────────────────────────────────────────────────────────
 
-  # The estate's real shape: three DRM devices declared, devhome forbidden the RX 6800 outright and
+  # A representative shape: three DRM devices declared, primary forbidden the RX 6800 outright and
   # owning the BMC framebuffer exclusively.
   estateInventory = { amd = { }; ast = { }; evdi = { }; };
-  devhomeClaim = { amd.access = "none"; ast.access = "exclusive"; };
+  primaryClaim = { amd.access = "none"; ast.access = "exclusive"; };
 
   evalSessions = { host ? [ ], sessions }:
     evalWith (host ++ [ sessionModule { nixdesktop.sessions = sessions; } ]);
@@ -93,31 +93,31 @@ let
 
   seated = extra: {
     compositor = "scroll";
-    user = "richc";
+    user = "alice";
     delivery = "seated";
     renderer = "pixman";
   } // extra;
 
   headless = extra: {
     compositor = "scroll";
-    user = "richc";
+    user = "alice";
     delivery = "headless";
     renderer = "pixman";
   } // extra;
 
-  devhome = withNixhost {
+  primary = withNixhost {
     inventory = estateInventory;
-    environments.devhome.resources.gpu = devhomeClaim;
-    sessions.desk = seated { environment = "devhome"; };
+    environments.primary.resources.gpu = primaryClaim;
+    sessions.desk = seated { environment = "primary"; };
   };
 
-  # The SAME estate, but VT-backed (`vt = 1` -- devhome on the server owns VT 1, see this module's
+  # The SAME estate, but VT-backed (`vt = 1` -- primary on the server owns VT 1, see this module's
   # own `nixdesktop.sessions` example) -- the other seated shape, proving `seatdVtBound`/
-  # `requiredGroups` actually flip with it rather than being hardcoded to the arch LXC's own shape.
-  devhomeVtBacked = withNixhost {
+  # `requiredGroups` actually flip with it rather than being hardcoded to the workstation's own shape.
+  primaryVtBacked = withNixhost {
     inventory = estateInventory;
-    environments.devhome.resources.gpu = devhomeClaim;
-    sessions.desk = seated { environment = "devhome"; vt = 1; };
+    environments.primary.resources.gpu = primaryClaim;
+    sessions.desk = seated { environment = "primary"; vt = 1; };
   };
 
   # A headless session naming a VT it has no seat to own -- see the assertion this fixture trips
@@ -127,11 +127,11 @@ let
   # A seated session that ALSO asks for two virtual outputs -- proving `virtualOutputs` is
   # orthogonal to `delivery` right here at the module that owns both fields (see
   # `renderer`'s own doc for why a seated session declaring this must not be forced to pixman).
-  devhomeWithVirtualOutputs = withNixhost {
+  primaryWithVirtualOutputs = withNixhost {
     inventory = estateInventory;
-    environments.devhome.resources.gpu = devhomeClaim;
+    environments.primary.resources.gpu = primaryClaim;
     sessions.desk = seated {
-      environment = "devhome";
+      environment = "primary";
       virtualOutputs = [ { width = 1920; height = 1080; } { width = 2560; height = 1440; } ];
     };
   };
@@ -156,16 +156,16 @@ let
   # the consumer's side, not on nixhost's.
   unknownEnv = withNixhost {
     inventory = estateInventory;
-    environments.devhome.resources.gpu = devhomeClaim;
-    sessions.desk = seated { environment = "devhom"; };
+    environments.primary.resources.gpu = primaryClaim;
+    sessions.desk = seated { environment = "primar"; };
   };
 
   # A claim naming a device the inventory does not contain. Deliberately a warning, not an
   # assertion: nixhost itself leaves that question open at the owner.
   claimOffInventory = withNixhost {
     inventory = { ast = { }; };
-    environments.devhome.resources.gpu = { nvidia.access = "exclusive"; };
-    sessions.desk = seated { environment = "devhome"; };
+    environments.primary.resources.gpu = { nvidia.access = "exclusive"; };
+    sessions.desk = seated { environment = "primary"; };
   };
 
   # nixhost never composed at all — the ordinary state of a host that has not adopted it. Must be
@@ -177,13 +177,13 @@ let
   results = {
     # ── THE DERIVED SETS ──────────────────────────────────────────────────────────────────────
     "permitted is every device whose access is not none" =
-      (sessionsOf devhome).desk.permittedDevices == [ "ast" ];
+      (sessionsOf primary).desk.permittedDevices == [ "ast" ];
 
     # THE COMPLEMENT, over the FULL inventory — the shape niri needs, and the reason a complete
     # inventory is mandatory rather than tidy. `amd` is the forbidden RX 6800; `evdi` is declared
     # but unclaimed and must be excluded just as explicitly, or it leaks into niri's enumeration.
     "denied is the complement over the whole inventory" =
-      (sessionsOf devhome).desk.deniedDevices == [ "amd" "evdi" ];
+      (sessionsOf primary).desk.deniedDevices == [ "amd" "evdi" ];
 
     # wlroots takes the FIRST device in WLR_DRM_DEVICES that opens as the primary, so the order is
     # a real statement about which card backs the renderer — not incidental.
@@ -210,17 +210,17 @@ let
 
     # ── vt / seatdVtBound / requiredGroups: THE VT-BACKED VS NOT DISTINCTION ────────────────────
     # See modules/session.nix's own header for the measured facts these two shapes are built on:
-    # the arch LXC has a real seat0 but no /dev/tty0 at all, while devhome (vt = 1) owns a real VT.
-    "vt defaults to null (the arch LXC's own shape, not stated as a fixture default)" =
-      (sessionsOf devhome).desk.vt == null;
+    # the workstation has a real seat0 but no /dev/tty0 at all, while primary (vt = 1) owns a real VT.
+    "vt defaults to null (the workstation's own shape, not stated as a fixture default)" =
+      (sessionsOf primary).desk.vt == null;
 
     "a seat with no VT is NOT seatdVtBound, and needs every device-access group, alphabetical" =
-      (sessionsOf devhome).desk.seatdVtBound == false
-      && (sessionsOf devhome).desk.requiredGroups == [ "input" "render" "seat" "video" ];
+      (sessionsOf primary).desk.seatdVtBound == false
+      && (sessionsOf primary).desk.requiredGroups == [ "input" "render" "seat" "video" ];
 
     "a VT-backed seat (vt = 1) IS seatdVtBound, and needs no groups at all" =
-      (sessionsOf devhomeVtBacked).desk.seatdVtBound == true
-      && (sessionsOf devhomeVtBacked).desk.requiredGroups == [ ];
+      (sessionsOf primaryVtBacked).desk.seatdVtBound == true
+      && (sessionsOf primaryVtBacked).desk.requiredGroups == [ ];
 
     "a headless session (no seat at all) is never seatdVtBound and needs no groups either" =
       (sessionsOf noNixhost).remote.seatdVtBound == false
@@ -238,7 +238,7 @@ let
       countMatching "is headless but declares" (firedMessages noNixhost) == 0;
 
     "a seated session declaring a vt trips no such rejection either (the estate's own VT-backed fixture)" =
-      countMatching "is headless but declares" (firedMessages devhomeVtBacked) == 0;
+      countMatching "is headless but declares" (firedMessages primaryVtBacked) == 0;
 
     # ── virtualOutputs: DATA PASSTHROUGH, NO CAPABILITY OPINION AT THIS LAYER ────────────────
     # This module declares no compositor mechanics (see its own header) -- the compositor
@@ -246,23 +246,23 @@ let
     # this module owes is that the field exists, defaults to empty, and roundtrips in declaration
     # order for BOTH delivery classes -- it is explicitly orthogonal to `delivery`.
     "virtualOutputs defaults to an empty list" =
-      (sessionsOf devhome).desk.virtualOutputs == [ ];
+      (sessionsOf primary).desk.virtualOutputs == [ ];
 
     "virtualOutputs roundtrips width/height in declaration order, on a seated session" =
-      (sessionsOf devhomeWithVirtualOutputs).desk.virtualOutputs == [
+      (sessionsOf primaryWithVirtualOutputs).desk.virtualOutputs == [
         { width = 1920; height = 1080; }
         { width = 2560; height = 1440; }
       ];
 
     "a seated session declaring virtualOutputs still passes the seated-device assertion (orthogonal fields)" =
-      countMatching "is seated but permits no device" (firedMessages devhomeWithVirtualOutputs) == 0;
+      countMatching "is seated but permits no device" (firedMessages primaryWithVirtualOutputs) == 0;
 
     # The device set is the environment's to own. A consumer writing it here must fail, not win.
     "permittedDevices is readOnly" =
       support.evalThrows [
         nixhostStub
         sessionModule
-        { nixdesktop.sessions.desk = seated { environment = "devhome"; } // { permittedDevices = [ "amd" ]; }; }
+        { nixdesktop.sessions.desk = seated { environment = "primary"; } // { permittedDevices = [ "amd" ]; }; }
       ];
 
     # ── HEADLESS => PIXMAN ────────────────────────────────────────────────────────────────────
@@ -284,7 +284,7 @@ let
 
     # ── SEATED => A DEVICE TO MASTER ──────────────────────────────────────────────────────────
     "a seated session with a real claim is fine" =
-      countMatching "is seated but permits no device" (firedMessages devhome) == 0;
+      countMatching "is seated but permits no device" (firedMessages primary) == 0;
 
     "a seated session naming no environment is rejected" =
       countMatching "is seated but permits no device"
@@ -302,8 +302,8 @@ let
 
     "the message distinguishes an unknown environment from an empty claim" =
       let m = lib.head (matching "is seated but permits no device" (firedMessages unknownEnv)); in
-      lib.hasInfix ''nixhost declares no environment named "devhom"'' m
-      && lib.hasInfix "Declared: devhome" m;
+      lib.hasInfix ''nixhost declares no environment named "primar"'' m
+      && lib.hasInfix "Declared: primary" m;
 
     # ── ONE SEATED SESSION PER SEAT ───────────────────────────────────────────────────────────
     # Refused independently by drm_setmaster_ioctl (-EBUSY), seatd's busy check and logind's single
@@ -312,10 +312,10 @@ let
       let
         cfg = withNixhost {
           inventory = estateInventory;
-          environments.devhome.resources.gpu = devhomeClaim;
+          environments.primary.resources.gpu = primaryClaim;
           sessions = {
-            desk = seated { environment = "devhome"; };
-            other = seated { environment = "devhome"; };
+            desk = seated { environment = "primary"; };
+            other = seated { environment = "primary"; };
           };
         };
       in
@@ -328,11 +328,11 @@ let
         cfg = withNixhost {
           inventory = estateInventory;
           environments = {
-            devhome.resources.gpu = devhomeClaim;
+            primary.resources.gpu = primaryClaim;
             second.resources.gpu = { amd.access = "exclusive"; };
           };
           sessions = {
-            desk = seated { environment = "devhome"; };
+            desk = seated { environment = "primary"; };
             other = seated { environment = "second"; seat = "seat1"; };
           };
         };
@@ -345,9 +345,9 @@ let
       let
         cfg = withNixhost {
           inventory = estateInventory;
-          environments.devhome.resources.gpu = devhomeClaim;
+          environments.primary.resources.gpu = primaryClaim;
           sessions = {
-            desk = seated { environment = "devhome"; };
+            desk = seated { environment = "primary"; };
             remote = headless { };
           };
         };
@@ -360,10 +360,10 @@ let
       let
         cfg = withNixhost {
           inventory = estateInventory;
-          environments.devhome.resources.gpu = devhomeClaim;
+          environments.primary.resources.gpu = primaryClaim;
           sessions = {
-            desk = seated { environment = "devhome"; };
-            other = seated { environment = "devhome"; enable = false; };
+            desk = seated { environment = "primary"; };
+            other = seated { environment = "primary"; enable = false; };
           };
         };
       in
@@ -403,12 +403,12 @@ let
 
     # ── WARNINGS ──────────────────────────────────────────────────────────────────────────────
     "an environment nixhost does not declare warns" =
-      lib.length (lib.filter (w: lib.hasInfix ''names environment "devhom"'' w) unknownEnv.warnings) == 1;
+      lib.length (lib.filter (w: lib.hasInfix ''names environment "primar"'' w) unknownEnv.warnings) == 1;
 
     "a claim naming a device outside the inventory warns" =
       lib.length (lib.filter (w: lib.hasInfix ''permits the device "nvidia"'' w) claimOffInventory.warnings) == 1;
 
-    "a correct estate produces no warnings at all" = devhome.warnings == [ ];
+    "a correct estate produces no warnings at all" = primary.warnings == [ ];
 
     # ── THE RENAME DECOYS ─────────────────────────────────────────────────────────────────────
     #

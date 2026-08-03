@@ -2,7 +2,7 @@
 # consumer composes both (mirrors checks/session-devices.nix's own nixhost fixture), and proves
 # the shapes that matter most: a seated session is unrepresentable as a `--user` unit and a
 # headless one can never carry `PAMName=`, because getting that backwards is the exact defect this
-# whole module exists to remove (see modules/launcher.nix's header — the elitebook's live, silent
+# whole module exists to remove (see modules/launcher.nix's header — the laptop's live, silent
 # polkit failure is what a `--user` "seated" session actually looks like); a seated unit is a true
 # AUTOLOGIN with no greeter anywhere upstream of it (Design A — see that file's own header); its
 # `Environment=` is VT-AWARE in both directions (`XDG_VTNR` present iff `vt != null`); and the
@@ -25,7 +25,7 @@
 # stubbed `systemd.*`/`users.*` as bare `attrsOf anything` — which happily accepted `DevicePolicy =
 # "strict"` with an empty starting `DeviceAllow=`, a bare non-absolute `ExecStart`, and a
 # `users.users.<name> = { linger = true; }` write, reporting 21/21 green against a module that
-# could not actually start a session (measured live on corbet-server: `status=208/STDIN`). A stub
+# could not actually start a session (measured live on the server: `status=208/STDIN`). A stub
 # that accepts anything proves nothing about whether systemd itself would accept it — and, for the
 # system-manager plane specifically, a stub that DOES declare `systemd.user.services` (when the
 # real system-manager module tree never does) would prove nothing about the one genuine capability
@@ -121,7 +121,7 @@ let
 
   # Two devices, matching nixgpu's own worked examples (see the review instructions this pass
   # implements): "ast" is a display-only device with NO render node (an AST-class BMC framebuffer,
-  # `DRIVER_GEM | DRIVER_MODESET` and no more); "amd" has both. devhome permits "ast" exclusively
+  # `DRIVER_GEM | DRIVER_MODESET` and no more); "amd" has both. primary permits "ast" exclusively
   # and denies "amd" outright -- the SAME claim shape checks/session-devices.nix's own fixture uses,
   # so `permittedDevices` here resolves to exactly `[ "ast" ]`, as it does there. `cardNamePath`/
   # `renderNamePath` follow nixgpu's own `/dev/dri/by-name/<name>-{card,render}` convention exactly
@@ -137,10 +137,10 @@ let
       cardNamePath = "/dev/dri/by-name/amd-card"; renderNamePath = "/dev/dri/by-name/amd-render";
     };
   };
-  devhomeClaim = { ast.access = "exclusive"; amd.access = "none"; };
+  primaryClaim = { ast.access = "exclusive"; amd.access = "none"; };
 
   baseModules = [
-    { nixhost = { resources.gpu = estateInventory; environments.devhome.resources.gpu = devhomeClaim; }; }
+    { nixhost = { resources.gpu = estateInventory; environments.primary.resources.gpu = primaryClaim; }; }
   ];
 
   # Gives "scroll" an already-absolute `command`, so the happy-path fixtures below resolve their
@@ -154,22 +154,22 @@ let
   # unresolved-command one (niri's own built-in `command = "niri --session"` is not absolute).
   niriAbsoluteOverride = { nixdesktop.launcher.compositors.niri.command = "/nix/store/fake-niri-path/bin/niri"; };
 
-  # `vt` LEFT AT ITS DEFAULT (`null`) -- deliberately. This is the arch LXC's own shape: a seated
+  # `vt` LEFT AT ITS DEFAULT (`null`) -- deliberately. This is the workstation's own shape: a seated
   # session whose seat has no VT, which is the estate's real, live case and therefore the one worth
   # exercising by default (`seatdVtBound == false`, `requiredGroups != [ ]`, no `XDG_VTNR` on the
   # unit). A VT-backed sibling is its own fixture, `vtBackedCfg`, below.
   seated = extra: {
     compositor = "scroll";
-    user = "richc";
+    user = "alice";
     delivery = "seated";
     renderer = "pixman";
-    environment = "devhome";
+    environment = "primary";
     seat = "seat0";
   } // extra;
 
   headless = extra: {
     compositor = "scroll";
-    user = "richc";
+    user = "alice";
     delivery = "headless";
     renderer = "pixman";
   } // extra;
@@ -184,10 +184,10 @@ let
   unresolvedCommandCfg = evalWith (baseModules ++ [ { nixdesktop.sessions.desk = seated { }; } ]);
 
   # ── VT-BACKED, THE OTHER SEATED SHAPE ─────────────────────────────────────────────────────────
-  # devhome on the server owns VT 1 (see modules/session.nix's own example) -- `seatdVtBound ==
+  # primary on the server owns VT 1 (see modules/session.nix's own example) -- `seatdVtBound ==
   # true`, `requiredGroups == [ ]`, the unit's own `Environment=` must carry `XDG_VTNR=1`, and must
   # carry NO `SEATD_VTBOUND` key at all (there is nothing to work around: a VT-bound seatd follows
-  # the VT normally here). This is the estate's OTHER real, live case (devhome), not a synthetic one.
+  # the VT normally here). This is the estate's OTHER real, live case (primary), not a synthetic one.
   vtBackedCfg = evalWith (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { vt = 1; }; } ]);
 
   # ── THE VT's OTHER CLAIMANTS: the opt-out, and the seatless case ────────────────────────────
@@ -201,7 +201,7 @@ let
 
   # ── permittedDevicePaths: A HOST-STATED PATH FOR A DEVICE CLASS NO INVENTORY OWNS ────────────
   # A by-path ALSA node -- the estate's own worked example (modules/session.nix's own doc, and the
-  # commit that introduced this option) -- appended on top of the estate's real `devhome` fixture,
+  # commit that introduced this option) -- appended on top of the estate's real `primary` fixture,
   # so this proves the append composes with a real GPU claim rather than standing in for one.
   sndPath = "/dev/snd/by-path/pci-0000:0c:00.4";
   devicePathsCfg = evalWith (baseModules ++ [
@@ -210,18 +210,18 @@ let
   ]);
 
   # ── GROUP MEMBERSHIP, THE THREE STATES ────────────────────────────────────────────────────────
-  # `seatedCfg` itself is the THIRD state (no `users.users.richc` entry at all -- an externally-
+  # `seatedCfg` itself is the THIRD state (no `users.users.alice` entry at all -- an externally-
   # managed identity) and needs no separate fixture; the assertion must be silent for it precisely
   # because this module cannot see a fact lldap owns.
   groupsPresentCfg = evalWith (baseModules ++ [
     absoluteCompositorOverride
-    { users.users.richc.extraGroups = [ "video" "render" "input" "seat" "wheel" ]; }
+    { users.users.alice.extraGroups = [ "video" "render" "input" "seat" "wheel" ]; }
     { nixdesktop.sessions.desk = seated { }; }
   ]);
 
   groupsMissingCfg = evalWith (baseModules ++ [
     absoluteCompositorOverride
-    { users.users.richc.extraGroups = [ "video" "wheel" ]; }
+    { users.users.alice.extraGroups = [ "video" "wheel" ]; }
     { nixdesktop.sessions.desk = seated { }; }
   ]);
 
@@ -272,7 +272,7 @@ let
     {
       nixhost = {
         resources.gpu = { "card0" = { }; };
-        environments.devhome.resources.gpu."card0".access = "exclusive";
+        environments.primary.resources.gpu."card0".access = "exclusive";
       };
     }
     { nixdesktop.sessions.desk = seated { }; }
@@ -306,7 +306,7 @@ let
     # ── SEATED IS A SYSTEM UNIT, NEVER A --user ONE ─────────────────────────────────────────────
     "a seated session is a system unit with PAMName=login and User= set" =
       deskUnit.serviceConfig.PAMName == "login"
-      && deskUnit.serviceConfig.User == "richc";
+      && deskUnit.serviceConfig.User == "alice";
 
     "a seated session never appears under systemd.user.services" =
       !(seatedCfg.systemd.user.services ? "nixdesktop-desk");
@@ -348,7 +348,7 @@ let
       seatedCfgSm.systemd.maskedUnits == [ ];
 
     "a headless unit is scoped to its own user via ConditionUser" =
-      remoteUnit.unitConfig.ConditionUser == "richc";
+      remoteUnit.unitConfig.ConditionUser == "alice";
 
     "a headless unit gets WLR_BACKENDS=headless and the session's renderer, never auto" =
       lib.any (e: e == "WLR_BACKENDS=headless") remoteUnit.serviceConfig.Environment
@@ -359,8 +359,8 @@ let
     # forces NixOS to treat that name as a locally-managed account, which breaks the
     # externally-managed (lldap) identity path this module's own comments say it accommodates.
     "lingering is a declarative tmpfiles marker file, never a users.users definition" =
-      lib.any (r: lib.hasInfix "/var/lib/systemd/linger/richc" r) headlessCfg.systemd.tmpfiles.rules
-      && !(headlessCfg.users.users ? richc);
+      lib.any (r: lib.hasInfix "/var/lib/systemd/linger/alice" r) headlessCfg.systemd.tmpfiles.rules
+      && !(headlessCfg.users.users ? alice);
 
     "a seated-only config declares no linger marker at all (no headless session to need one)" =
       seatedCfg.systemd.tmpfiles.rules == [ ];
@@ -430,10 +430,10 @@ let
 
     # ── XDG_VTNR: PRESENT IFF vt != null -- SEE THIS FILE'S HEADER AND modules/launcher.nix's OWN
     # "THE VT FACT" ──────────────────────────────────────────────────────────────────────────────
-    "a non-VT-backed seated session's unit carries no XDG_VTNR at all (the arch LXC's own shape)" =
+    "a non-VT-backed seated session's unit carries no XDG_VTNR at all (the workstation's own shape)" =
       !(lib.any (e: lib.hasPrefix "XDG_VTNR=" e) deskUnit.serviceConfig.Environment);
 
-    "a VT-backed seated session's unit carries XDG_VTNR set to the declared VT (devhome's own shape)" =
+    "a VT-backed seated session's unit carries XDG_VTNR set to the declared VT (primary's own shape)" =
       lib.any (e: e == "XDG_VTNR=1") vtBackedUnit.serviceConfig.Environment;
 
     # ── SEATD_VTBOUND: PRESENT EXACTLY WHEN THE SEAT HAS NO VT ──────────────────────────────────
@@ -458,7 +458,7 @@ let
       !(containsLiteralCardNumber allText);
 
     # ── GROUP MEMBERSHIP FOR A NON-VT-BACKED SEAT IS ACTUALLY VERIFIED ──────────────────────────
-    "the estate's baseline fixture (no users.users.richc entry -- externally managed) trips no missing-groups assertion" =
+    "the estate's baseline fixture (no users.users.alice entry -- externally managed) trips no missing-groups assertion" =
       countMatching "needs group(s)" (firedMessages seatedCfg) == 0;
 
     "a NixOS-managed user missing required groups trips the assertion, naming them" =
@@ -554,7 +554,7 @@ let
   lightweightSystemManagerResults = {
     "SM: a seated session on the system-manager plane is a system unit with PAMName=login and User= set" =
       deskUnitSm.serviceConfig.PAMName == "login"
-      && deskUnitSm.serviceConfig.User == "richc";
+      && deskUnitSm.serviceConfig.User == "alice";
 
     "SM: DeviceAllow/DevicePolicy/ExecStart render identically to the NixOS plane for the same fixture" =
       deskUnitSm.serviceConfig.DevicePolicy == "closed"
@@ -617,7 +617,7 @@ let
       sessionModule
       launcherModuleSystemManager
       {
-        nixhost = { resources.gpu = estateInventory; environments.devhome.resources.gpu = devhomeClaim; };
+        nixhost = { resources.gpu = estateInventory; environments.primary.resources.gpu = primaryClaim; };
         nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll";
         nixpkgs.hostPlatform = system;
       }
@@ -627,7 +627,7 @@ let
 
   # `permittedDevicePaths` is on this fixture too, deliberately -- see `deviceAllowLines`'s own
   # comment: the ordering proof below needs the REAL rendered unit text, not the lightweight
-  # layers' pre-render Nix list, and the estate's real `devhome` claim (a genuine DRM device
+  # layers' pre-render Nix list, and the estate's real `primary` claim (a genuine DRM device
   # already permitted) is what proves the append composes with a real GPU claim rather than
   # standing in for one.
   realSystemManagerSeated = realSystemManagerFor { nixdesktop.sessions.desk = seated { permittedDevicePaths = [ sndPath ]; }; };
@@ -666,9 +666,9 @@ let
   deskUnitTextSm = realSystemManagerSeated.config.systemd.units."nixdesktop-desk.service".text;
 
   realSystemManagerResults = {
-    "REAL SYSTEM-MANAGER: the seated unit is a systemd.services unit with PAMName=login and User=richc" =
+    "REAL SYSTEM-MANAGER: the seated unit is a systemd.services unit with PAMName=login and User=alice" =
       lib.hasInfix "PAMName=login\n" deskUnitTextSm
-      && lib.hasInfix "User=richc\n" deskUnitTextSm;
+      && lib.hasInfix "User=alice\n" deskUnitTextSm;
 
     "REAL SYSTEM-MANAGER: the rendered seated unit's ExecStart is absolute" =
       lib.hasInfix "ExecStart=/nix/store/fake-scroll-path/bin/scroll\n" deskUnitTextSm;
@@ -732,7 +732,7 @@ let
       sessionModule
       launcherModuleNixos
       {
-        nixhost = { resources.gpu = estateInventory; environments.devhome.resources.gpu = devhomeClaim; };
+        nixhost = { resources.gpu = estateInventory; environments.primary.resources.gpu = primaryClaim; };
         # `permittedDevicePaths` rides the same VT-backed fixture -- see `deviceAllowLines`'s own
         # comment for why the ordering proof below needs this REAL rendered text.
         nixdesktop.sessions.desk = seated { vt = 1; permittedDevicePaths = [ sndPath ]; };
@@ -756,9 +756,9 @@ let
       (realSystem.config.systemd.services ? "nixdesktop-desk")
       && !(realSystem.config.systemd.user.services ? "nixdesktop-desk");
 
-    "REAL SYSTEM: the rendered seated unit carries PAMName=login and User=richc" =
+    "REAL SYSTEM: the rendered seated unit carries PAMName=login and User=alice" =
       lib.hasInfix "PAMName=login\n" deskUnitText
-      && lib.hasInfix "User=richc\n" deskUnitText;
+      && lib.hasInfix "User=alice\n" deskUnitText;
 
     "REAL SYSTEM: the rendered seated unit's ExecStart is an absolute path" =
       lib.hasInfix "ExecStart=/nix/store/fake-scroll-path/bin/scroll\n" deskUnitText;
@@ -812,8 +812,8 @@ let
       && !(lib.hasInfix "PAMName=" remoteUnitText);
 
     "REAL SYSTEM: lingering is rendered as a real systemd.tmpfiles.rules entry, never users.users" =
-      lib.any (r: lib.hasInfix "/var/lib/systemd/linger/richc" r) realSystem.config.systemd.tmpfiles.rules
-      && !(realSystem.config.users.users ? richc);
+      lib.any (r: lib.hasInfix "/var/lib/systemd/linger/alice" r) realSystem.config.systemd.tmpfiles.rules
+      && !(realSystem.config.users.users ? alice);
   };
 in
 report "launcher" (lightweightResults // realNixosSystemResults // lightweightSystemManagerResults // realSystemManagerResults)

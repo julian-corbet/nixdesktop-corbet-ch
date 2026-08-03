@@ -81,12 +81,12 @@ let
       true)).success;
 
   # ── CREDENTIAL fixtures ──────────────────────────────────────────────────────────────────────
-  credentialPath = "/home/richc/.config/credstore.encrypted/oo7.keyring-encryption-password";
+  credentialPath = "/home/alice/.config/credstore.encrypted/oo7.keyring-encryption-password";
 
   credEnabled = {
     nixdesktop.oo7.credential = {
       enable = true;
-      user = "richc";
+      user = "alice";
       path = credentialPath;
     };
   };
@@ -98,15 +98,15 @@ let
   # independently of `enable` (a consumer staging values ahead of flipping the switch), distinct
   # from `credDisabledCfg` below (nothing configured at all, the true rest state).
   credConfiguredButDisabledCfg = evalWithNixos [
-    { nixdesktop.oo7.credential = { enable = false; user = "richc"; path = credentialPath; }; }
+    { nixdesktop.oo7.credential = { enable = false; user = "alice"; path = credentialPath; }; }
   ];
 
   credDisabledCfg = evalWithNixos [ ];
 
-  credService = "oo7-credential-provision-richc";
+  credService = "oo7-credential-provision-alice";
 
   # ── BOOTSTRAP fixtures ───────────────────────────────────────────────────────────────────────
-  keyringPath = "/home/richc/.local/share/keyrings/login.keyring";
+  keyringPath = "/home/alice/.local/share/keyrings/login.keyring";
   oo7CliCommand = "/nix/store/fake-oo7/bin/oo7-cli";
 
   bootstrapEnabled = {
@@ -141,14 +141,14 @@ let
       credCfgNixos.systemd.services.${credService}.wantedBy == [ "multi-user.target" ];
 
     # ═══ CREDENTIAL: the three measured facts, in the actual script text ═══════════════════════
-    # `richc` (and this whole fixture's path) needs no shell quoting at all --
+    # `alice` (and this whole fixture's path) needs no shell quoting at all --
     # `lib.escapeShellArg` (nixpkgs' own, confirmed by reading `lib/strings.nix`) only wraps a
     # value in `'...'` when it fails a `[[:alnum:],._+:@%/-]+` match; a bare username or an
     # ordinary absolute path both pass that match and come back UNQUOTED, verbatim -- still safe,
     # just not visually quoted. These assertions match that real, correct behaviour rather than
     # assuming escaping always adds quote marks.
     "credential script: resolves uid at RUNTIME via id -u, never a Nix-eval-time value" =
-      lib.hasInfix "uid=$(id -u richc)" credCfgNixos.nixdesktop.oo7.credential.renderedScript;
+      lib.hasInfix "uid=$(id -u alice)" credCfgNixos.nixdesktop.oo7.credential.renderedScript;
     "credential script: base64-encodes the random plaintext" =
       lib.hasInfix "base64" credCfgNixos.nixdesktop.oo7.credential.renderedScript;
     "credential script: strips the trailing newline base64 leaves behind" =
@@ -166,7 +166,7 @@ let
       lib.hasInfix credentialPath credCfgNixos.nixdesktop.oo7.credential.renderedScript
       && !(lib.hasInfix "/etc/credstore.encrypted" credCfgNixos.nixdesktop.oo7.credential.renderedScript);
     "credential script: chowns the blob to the target user, not left root:root" =
-      lib.hasInfix "chown richc:richc" credCfgNixos.nixdesktop.oo7.credential.renderedScript;
+      lib.hasInfix "chown alice:alice" credCfgNixos.nixdesktop.oo7.credential.renderedScript;
     "credential script is IDENTICAL text on both planes -- one mechanism, not two copies" =
       credCfgNixos.nixdesktop.oo7.credential.renderedScript
         == credCfgSystemManager.nixdesktop.oo7.credential.renderedScript;
@@ -187,7 +187,7 @@ let
     "credential: enable=true with no `user` set throws (mandatory, no default)" =
       evalThrowsWithPkgs [ credentialModule systemHostStubNixos { nixdesktop.oo7.credential = { enable = true; path = credentialPath; }; } ];
     "credential: enable=true with no `path` set throws (mandatory, no default)" =
-      evalThrowsWithPkgs [ credentialModule systemHostStubNixos { nixdesktop.oo7.credential = { enable = true; user = "richc"; }; } ];
+      evalThrowsWithPkgs [ credentialModule systemHostStubNixos { nixdesktop.oo7.credential = { enable = true; user = "alice"; }; } ];
 
     # ═══ BOOTSTRAP: renders on NixOS, ordered strictly before the daemon ═══════════════════════
     "bootstrap: renders systemd.user.services.oo7-keyring-bootstrap" =
