@@ -62,7 +62,10 @@ let
       addresses = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        example = [ "192.168.42.10" "100.64.42.10" ];
+        # Documentation-range addresses (RFC 5737 / RFC 3849), never a real network. An example in
+        # a public module is read as a template, so a working private range here would publish one
+        # operator's topology and invite a reader to copy it into their own unrelated one.
+        example = [ "192.0.2.10" "2001:db8::10" ];
         description = ''
           Where this desktop can be reached, most-preferred first, for the purpose of forwarding a
           window to or from it. Consumed by a remoting module to build its peer set.
