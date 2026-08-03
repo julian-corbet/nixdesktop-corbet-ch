@@ -235,7 +235,44 @@ rec {
     # drags KDE Frameworks onto a GTK desktop, file-roller is GTK4 + libadwaita at the pinned
     # version, engrampa is GTK3 — the same reasoning that makes mate-polkit the default polkit
     # agent (see profiles/desktop.nix's header).
-    fileManagerExtras = [ pkgs.engrampa ];
+    #
+    # THE BACKENDS ARE NOT OPTIONAL EXTRAS, they are what makes the front-end able to do anything.
+    # engrampa is a dispatcher: `src/fr-command-*.c` is one module per format, each exec'ing a
+    # command by bare name. The binary is NOT wrapped (raw ELF, no PATH injection), so on NixOS
+    # every one of those commands has to be somewhere on the session's own PATH or the format is
+    # simply missing from "Create Archive" and an archive of that type will not open. On a distro
+    # with an ambient /usr/bin this never comes up; here it is the entire difference between a
+    # working archive manager and a window that lists three formats.
+    #
+    # `unar`, NOT `unrar`, for RAR. engrampa ships BOTH a `rar` backend (unrar/unrar-free) and an
+    # `unarchiver` backend (unar/lsar) — read out of the source, both are real. nixpkgs' `unrar`
+    # is unfree, and a fleet host should not take an allowUnfree carve-out for one format when a
+    # free reader for the same format is right there. Extraction only, which is what RAR is for.
+    #
+    # `p7zip`, not `_7zz`: the latter ships its binary as `7zz` only, and `7z` is the name the
+    # backend calls. Same trap shape as the qt6ct alias — the wrong choice resolves fine and then
+    # does nothing.
+    #
+    # No `unace`: not in nixpkgs at all. ACE is a dead format with one proprietary implementation;
+    # the Arch table carries it because Arch still packages it, and this asymmetry is a fact about
+    # the two package sets rather than a decision.
+    fileManagerExtras = [
+      pkgs.engrampa
+
+      # Formats worth having, one package per fr-command backend that needs an external tool.
+      pkgs.p7zip # 7z, and engrampa's ARJ path
+      pkgs.unar # rar (free; see above)
+      pkgs.lhasa # lha/lzh
+      pkgs.lrzip # lrzip
+      pkgs.lzop # lzo
+      pkgs.cpio # cpio, and half of rpm
+      pkgs.rpm # rpm2cpio
+      pkgs.dpkg # deb
+      pkgs.brotli # brotli
+
+      # tar/gzip/bzip2/xz/zstd/zip/unzip are NOT listed: they are in the default NixOS system
+      # path already, and a second copy here would shadow the one the rest of the system uses.
+    ];
 
     # DELIBERATELY EMPTY, and the emptiness is the content. nixpkgs builds ONE gvfs derivation with
     # samba, libnfs, libmtp and libgphoto2 all as ordinary buildInputs (`pkgs/by-name/gv/gvfs`:
