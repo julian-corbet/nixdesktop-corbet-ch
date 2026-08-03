@@ -219,8 +219,20 @@ let
   # keep the file at oo7's own default search location gets identical behaviour either way, since
   # oo7-daemon's packaged unit's `ImportCredential=` line fires independently of anything this
   # module renders -- the two are complementary belt-and-braces, not competing.
+  #
+  # `&& cfg.keyring.oo7.renderDaemon` on the oo7 branch, NOT a separate guard bolted on afterward:
+  # `renderDaemon`'s own option doc (below, under `keyring.oo7`) has the full account of the live
+  # bug this closes, but the reason it has to live HERE specifically, in the branch condition
+  # itself rather than in a wrapper around this value, is a Nix laziness fact -- `cfg.keyring.oo7.
+  # command` is MANDATORY with no default (see that option's own doc), so a host that sets
+  # `renderDaemon = false` and therefore never states `command` at all (there is no daemon left
+  # for this module to invoke) must never let evaluation TOUCH `cfg.keyring.oo7.command`, or it
+  # throws "used but not defined" regardless of whether the resulting value would ever have been
+  # read. Putting the guard in the `if` condition means the `then` branch, and `command` inside
+  # it, is never forced when `renderDaemon` is false -- the same short-circuit discipline
+  # `effectiveKeyringCommand`'s own guards elsewhere in this file already rely on.
   keyringProviderCommand =
-    if cfg.keyring.oo7.enable then cfg.keyring.oo7.command
+    if cfg.keyring.oo7.enable && cfg.keyring.oo7.renderDaemon then cfg.keyring.oo7.command
     else if cfg.keyring.gnomeKeyring.enable then cfg.keyring.gnomeKeyring.command
     else null;
 
@@ -527,11 +539,23 @@ let
           # negation syntax and why a systemd Condition is what this needs rather than a shell-level
           # `[ -e ... ]` guard.
           conditionPathExists = "!${cfg.keyring.oo7.credential.bootstrap.keyringPath}";
-          # The one direction `after`/`wantedBy` (both left at their shared default,
-          # graphical-session.target, same as `keyring` itself -- both units land in the same
-          # transaction) cannot express: the DAEMON must wait for THIS, never the reverse. See
-          # `before`'s own option doc.
-          before = [ "keyring.service" ];
+          # The one direction `after`/`wantedBy` alone cannot express: the DAEMON must wait for
+          # THIS, never the reverse. See `daemonServiceName`'s own option doc for the "!" negation
+          # syntax's sibling story here -- the bare name is no longer hardcoded to this module's
+          # own `keyring` entry, because it is not always the unit that needs waiting for (see
+          # `oo7.renderDaemon`'s own doc for the live bug that forced this).
+          before = [ "${cfg.keyring.oo7.credential.bootstrap.daemonServiceName}.service" ];
+          # `after`/`wantedBy`/`partOf` all pinned to `daemonServiceName`'s own sibling,
+          # `daemonTarget`, rather than left at the generic per-component default
+          # (graphical-session.target) every OTHER entry in this file safely relies on -- see
+          # `daemonTarget`'s own option doc for exactly why leaving these three at the generic
+          # default stops being correct the moment `daemonServiceName` points outside this
+          # module's own rendering (`oo7.renderDaemon = false`): `before` above only orders two
+          # units that land in the SAME systemd transaction, and pinning all three of these to the
+          # target the REAL daemon unit is actually `WantedBy=` is what guarantees that.
+          after = [ cfg.keyring.oo7.credential.bootstrap.daemonTarget ];
+          wantedBy = [ cfg.keyring.oo7.credential.bootstrap.daemonTarget ];
+          partOf = [ cfg.keyring.oo7.credential.bootstrap.daemonTarget ];
           # The identical credential the daemon itself loads (`keyringLoadCredentialEncrypted`,
           # already computed above) -- one credential, two readers, never a second copy asked for
           # here: `oo7-cli repair`'s `-s <password>` and oo7-daemon's own unlock must see the exact
@@ -1272,6 +1296,86 @@ in
           '';
         };
 
+        # ── renderDaemon: WHETHER THIS MODULE OWNS THE DAEMON UNIT AT ALL ─────────────────────────
+        #
+        # THE BUG THIS OPTION EXISTS TO NAME, MEASURED LIVE (corbet-archlxc, 2026-08-03). The
+        # pacman `oo7` package installs its OWN `--user` unit at the identical bare name this
+        # module's own `keyring` entry uses for a DIFFERENT unit
+        # (`/usr/lib/systemd/user/oo7-daemon.service`, `[Install] WantedBy=default.target`,
+        # `ImportCredential=oo7.keyring-encryption-password` -- the exact shipped text is quoted in
+        # full in the keyring assembly's own header comment, above). On a host that never masks
+        # that vendor unit (unlike `home/richc/hosts/elitebook.nix`'s own deliberate
+        # `mkOutOfStoreSymlink "/dev/null"` mask -- see that file's header for why THAT host's
+        # shape is different, and correct, on its own terms), the vendor unit wins
+        # `org.freedesktop.secrets` every single time: `default.target` is the base target a
+        # `--user` manager reaches at STARTUP, strictly before `graphical-session.target` is ever
+        # pulled in by a compositor (this file's own header, "THE ORDERING TARGET") -- so by the
+        # time this module's own `keyring` entry (`WantedBy=graphical-session.target`, the same
+        # default every other component here uses) even starts, the vendor daemon has already
+        # claimed the bus name. Confirmed live: `busctl --user list` on that host shows the VENDOR
+        # unit owning `org.freedesktop.secrets`, healthy; this module's own `keyring.service` loses
+        # the `RequestName` race every time and sits permanently `failed`. Secrets keep working
+        # throughout (the vendor unit provides them) -- the bug is a duplicate, doomed-to-fail unit
+        # left behind by every `home-manager switch`, not a secrets outage.
+        #
+        # `renderDaemon = false` is the fix: this module still renders EVERYTHING ELSE the oo7
+        # provider needs -- `credential`/`credential.bootstrap` below are real `--user`-manager
+        # units this module is the ONLY thing that can render on a system-manager host at all (see
+        # `modules/oo7-keyring-bootstrap.nix`'s own header, "WHY THIS IS THE ONE GENUINELY
+        # IRREDUCIBLE SPLIT") -- it just stops ALSO rendering a second copy of the daemon itself.
+        # `credential.bootstrap.daemonServiceName`/`.daemonTarget` (below, that option group's own
+        # fields) are what then let the bootstrap step order itself correctly against whichever
+        # unit actually IS the daemon on such a host, instead of a name (`keyring.service`) that no
+        # longer exists to order against at all -- see those two options' own docs.
+        #
+        # `true`, the default, is unchanged behaviour for every host that does not opt out: this
+        # module renders its own `keyring.service` exactly as it always has, which remains the
+        # RIGHT shape both for a platform with no working vendor unit of its own (`hosts/nixnas-
+        # devhome.nix`'s NixOS-plane sibling module, `modules/oo7-keyring-bootstrap.nix`, draws the
+        # identical "this module never declares the daemon" line for the identical reason, but
+        # NixOS's `services.oo7.enable` -- a SEPARATE module this repo does not own -- is what
+        # supplies devhome's actual daemon, always; there is no "renderDaemon" toggle needed on
+        # that plane because the daemon was never this module's to render in the first place) and
+        # for a host that, like `home/richc/hosts/elitebook.nix`, has deliberately masked the
+        # vendor unit and wants THIS module's own daemon to be the one and only implementation.
+        #
+        # WHY NOT nixarch's `modules/foreign-service.nix` ("pacman owns the binary and the unit,
+        # Nix owns only the config, never render a second unit" -- the identical DOCTRINE this
+        # option applies). Considered and rejected as the implementation, not merely unconsidered:
+        # that module is SYSTEM-scoped throughout (`environment.etc`, `systemd.services`, a
+        # system-manager-only `config` block) and solves a differently-shaped problem -- it takes
+        # over a foreign daemon's ON-DISK CONFIG FILE and re-triggers it (`restartUnits`/`reapply`)
+        # whenever that file's content changes; it has no notion of `systemd.user.services` at all
+        # (oo7-daemon is a `--user` unit -- see this file's own header, "THE ORDERING TARGET" --
+        # and there is no `nixarch.foreignServices`-shaped config file to take over here in the
+        # first place, only two units that need correct RELATIVE ORDERING). Forcing this gap
+        # through that module would mean inventing a fake `configFiles` entry and a `reapply`
+        # script for a problem that was never about a config file, the exact "worse legibility for
+        # no real gain" nixarch's own README warns against elsewhere in this repo. The two modules
+        # share a doctrine, not a shape -- this stays a home-manager-plane option instead.
+        renderDaemon = lib.mkOption {
+          type = lib.types.bool;
+          default = true;
+          description = ''
+            Whether this module renders its own `keyring` unit (the `oo7-daemon` invocation
+            configured via `command` above) at all. See the header comment on this option, above,
+            for the live bug this exists to name and fix -- rendering a second daemon alongside a
+            platform vendor unit that already owns `org.freedesktop.secrets` produces a
+            permanently-failed duplicate, not a second working provider (a systemd D-Bus
+            `RequestName` race has exactly one winner, always).
+
+            Set `false` on a host whose platform package already ships and starts a healthy
+            `org.freedesktop.secrets` daemon of its own (a pacman `oo7` package's packaged unit,
+            confirmed live via `busctl --user list` showing IT as the name's owner) -- this module
+            then renders only the credential + first-keyring bootstrap machinery (`credential.*`,
+            below), ordered against that EXTERNAL unit via `credential.bootstrap.
+            daemonServiceName`/`.daemonTarget` instead of against a `keyring.service` this module
+            no longer creates. `config.assertions` below refuses the one combination this cannot
+            express safely: `renderDaemon = false` with `daemonServiceName` left at its own
+            self-referential default.
+          '';
+        };
+
         # ── the credential-based unlock: THE REASON oo7 replaces gnome-keyring at all ───────────
         credential = {
           enable = lib.mkEnableOption ''
@@ -1356,16 +1460,22 @@ in
           # the keyring assembly's own header, "oo7-daemon -- DOES NOT MATCH gnome-keyring's
           # shape"), and a one-shot gate that runs once and a long-running daemon that runs forever
           # are two different systemd unit shapes with no way to be the same unit. `before = [
-          # "keyring.service" ]` on the bootstrap entry (not `after` on the daemon's own) is what
-          # orders them, since `keyring`'s own assembly (above) has no reason to know a bootstrap
-          # step exists at all when this is disabled -- see `before`'s own generic option doc.
+          # "<daemonServiceName>.service" ]` on the bootstrap entry (not `after` on the daemon's
+          # own) is what orders them, since `keyring`'s own assembly (above) has no reason to know
+          # a bootstrap step exists at all when this is disabled -- see `before`'s own generic
+          # option doc. `daemonServiceName` (below), NOT a hardcoded `"keyring.service"`: the unit
+          # that actually needs waiting for is not always this module's own `keyring` entry -- see
+          # `oo7.renderDaemon`'s own doc for the live bug that forced the name to become a value
+          # the consumer states, the same way `daemonTarget` (also below) forced `after`/
+          # `wantedBy`/`partOf` to stop being an unstated assumption too.
           bootstrap = {
             enable = lib.mkEnableOption ''
               close the first-keyring gap above by running `oo7-cli -k <keyringPath> -s <password>
               repair` once, gated on `keyringPath` not already existing, strictly before
-              `keyring.service` (oo7-daemon itself) ever starts. Requires `credential.enable`
-              (this reuses the identical credential the daemon loads -- see this option's own
-              header) -- meaningless, and asserted against, otherwise.
+              `daemonServiceName` (oo7-daemon itself, by default this module's own `keyring.
+              service`) ever starts. Requires `credential.enable` (this reuses the identical
+              credential the daemon loads -- see this option's own header) -- meaningless, and
+              asserted against, otherwise.
 
               LEAVE THIS OFF for a host whose keyring file already holds real secrets under some
               OTHER name than `keyringPath` names (a migrated Default_keyring.keyring, say): this
@@ -1408,6 +1518,71 @@ in
                 than special-casing this one binary as the exception: this repo names no package,
                 full stop, and a silent default here would be exactly the kind of package-name
                 knowledge the file header says this module never carries.
+              '';
+            };
+
+            daemonServiceName = lib.mkOption {
+              type = lib.types.str;
+              default = "keyring";
+              example = "oo7-daemon";
+              description = ''
+                The BARE name (no `.service` suffix) of the `nixdesktop.session.services` entry
+                this bootstrap step must complete before -- mirrors `modules/oo7-keyring-
+                bootstrap.nix`'s own `daemonServiceName` option on the NixOS-only sibling module
+                (same name, same purpose: that module's own header names THIS option group as the
+                system-manager plane's equivalent mechanism, so the option is ported here rather
+                than reinvented under a different name).
+
+                Defaults to `"keyring"` -- this module's OWN rendered daemon entry (see `oo7.
+                renderDaemon`'s own doc, above), correct exactly as long as that default
+                (`renderDaemon = true`) is also in effect: the two are a matched pair, never
+                independently free to disagree. Set this to the REAL vendor unit's bare name (e.g.
+                `"oo7-daemon"`, the pacman `oo7` package's own packaged unit -- see the keyring
+                assembly's header comment for its exact shipped unit text) whenever `oo7.
+                renderDaemon = false` names an externally-owned daemon instead. Getting this wrong
+                does not fail loudly: systemd treats `Before=` ordering against a unit that is
+                never created as a silent no-op, so a stale `"keyring"` left behind after flipping
+                `renderDaemon` to `false` does not break the build, it just silently stops closing
+                the gap this whole mechanism exists for -- `config.assertions` below catches
+                exactly that one combination, and `checks/oo7-convergence.nix` (the infra checkout)
+                proves it against each host's own real rendered config, not merely against this
+                option's own default.
+              '';
+            };
+
+            daemonTarget = lib.mkOption {
+              type = lib.types.str;
+              default = "graphical-session.target";
+              example = "default.target";
+              description = ''
+                The systemd user target this bootstrap step shares with the daemon named by
+                `daemonServiceName` -- pinned onto `after`/`wantedBy`/`partOf` all three at once,
+                instead of leaving those three at the generic per-component default every OTHER
+                entry in this file safely relies on (see each of those options' own docs: an
+                ordinary component's daemon-of-interest genuinely IS `graphical-session.target`
+                itself, so the generic default already puts both in the one relevant transaction).
+
+                `before = [ "<daemonServiceName>.service" ]` (this option group's own sibling
+                field, above) only orders two units that land in the SAME systemd transaction --
+                systemd does not retroactively re-order a unit that already finished starting as
+                part of an earlier, separate transaction. Leaving `after`/`wantedBy`/`partOf` at
+                `graphical-session.target` (this module's usual assumption) is exactly correct when
+                `daemonServiceName` names THIS module's own `keyring` entry (`oo7.renderDaemon =
+                true`, the default -- both units are `WantedBy` that same target, so they are
+                already in the same transaction), but silently WRONG the moment `daemonServiceName`
+                names an externally-owned unit that starts on a DIFFERENT target: a pacman `oo7`
+                package's own packaged unit ships `[Install] WantedBy=default.target` (see the
+                keyring assembly's header comment for the exact shipped text), and
+                `default.target` is the base target a `--user` manager reaches at startup, strictly
+                BEFORE `graphical-session.target` is ever pulled in (this file's own header, "THE
+                ORDERING TARGET"). A bootstrap step left on `graphical-session.target` in that case
+                queues into a transaction that starts strictly LATER than the one that already
+                started the real daemon, so `before` never gets a chance to fire at all -- the
+                ordering is not merely absent, it is INVERTED (the thing `before` was meant to
+                precede has already finished starting by the time this unit is even considered).
+                Set this to `"default.target"` (or whatever real target `daemonServiceName`'s own
+                unit is actually `WantedBy=`) whenever `daemonServiceName` points outside this
+                module's own rendering.
               '';
             };
           };
@@ -1511,11 +1686,21 @@ in
         '';
       }
       {
-        assertion = !(cfg.keyring.enable && effectiveKeyringCommand == null);
+        # `oo7.enable && !oo7.renderDaemon` is excluded on purpose, NOT an oversight: that
+        # combination means "oo7 IS the active provider, it just deliberately renders no
+        # `keyring` unit of its own" (see `renderDaemon`'s own header comment for the live bug
+        # this state exists to fix) -- `effectiveKeyringCommand == null` is the CORRECT, intended
+        # outcome there, not the "nobody chose a provider" misconfiguration this assertion exists
+        # to catch. Without this exclusion, the very state `renderDaemon = false` was built to
+        # express would itself become a build failure, which would defeat the option entirely.
+        assertion = !(cfg.keyring.enable && effectiveKeyringCommand == null
+          && !(cfg.keyring.oo7.enable && !cfg.keyring.oo7.renderDaemon));
         message = ''
           nixdesktop.session.keyring.enable is true but nothing tells it what to run: neither
           `oo7.enable` nor `gnomeKeyring.enable` is set, and `command` is null. Enable a provider,
-          or set `command` directly as the escape hatch.
+          or set `command` directly as the escape hatch. (If you intended oo7 with no daemon of
+          its own, set `oo7.enable = true` and `oo7.renderDaemon = false` explicitly -- that
+          combination is exempted from this assertion, not silently accepted by accident.)
         '';
       }
       {
@@ -1554,8 +1739,30 @@ in
           nixdesktop.session.keyring.oo7.credential.bootstrap.enable is true but `oo7.enable` is
           false. This bootstrap step exists solely to prepare a keyring FILE for oo7-daemon's own
           credential-based unlock (see `credential.bootstrap`'s own header) -- it has no purpose,
-          and nothing to order `before = [ "keyring.service" ]` against, when oo7 itself is not the
-          active provider. Enable `oo7.enable`, or turn bootstrap back off.
+          and nothing to order `before = [ "<daemonServiceName>.service" ]` against, when oo7
+          itself is not the active provider. Enable `oo7.enable`, or turn bootstrap back off.
+        '';
+      }
+      # The one combination `renderDaemon`/`daemonServiceName` cannot be left to disagree
+      # silently: see `renderDaemon`'s own header comment for the live bug that introduced both
+      # options, and `daemonServiceName`'s own doc for exactly why getting this wrong does NOT
+      # fail loudly on its own (a `Before=` edge onto a unit that is never created is a silent
+      # systemd no-op, not an error) -- this assertion is what turns it into a named build failure
+      # instead. `checks/oo7-convergence.nix` (the infra checkout) re-proves the same invariant
+      # against each host's own real rendered config, not merely against this option's own default.
+      {
+        assertion = !(cfg.keyring.oo7.credential.bootstrap.enable && !cfg.keyring.oo7.renderDaemon
+          && cfg.keyring.oo7.credential.bootstrap.daemonServiceName == "keyring");
+        message = ''
+          nixdesktop.session.keyring.oo7.renderDaemon is false (this module renders no daemon of
+          its own) but credential.bootstrap.daemonServiceName is still "keyring" -- that name only
+          ever refers to THIS module's own daemon entry, which renderDaemon = false means is never
+          created. `before = [ "keyring.service" ]` would then order this bootstrap step against a
+          unit that does not exist, which systemd treats as a silent no-op rather than a build or
+          runtime failure -- see that option's own doc. State the REAL daemon unit's bare name
+          explicitly (e.g. "oo7-daemon" for a pacman `oo7` package's own packaged unit, and set
+          `daemonTarget` to match its real `[Install] WantedBy=` target too), or turn
+          `renderDaemon` back on.
         '';
       }
     ];
