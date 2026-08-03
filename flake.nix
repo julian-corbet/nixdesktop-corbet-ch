@@ -124,8 +124,17 @@
       # second and not the first, and each reads the other defensively rather than importing it.
       nixosModules.monitors = ./modules/monitors.nix;
       nixosModules.layouts = ./modules/layouts.nix;
+      # desktops: the per-machine identity-accent registry. Exported under all three plane names
+      # for the same reason monitors/layouts are -- it is a plain option+assertion module with no
+      # `pkgs` dependency and no plane-specific config, so the SAME file composes into a NixOS, a
+      # system-manager or a home-manager evaluation unchanged. That is what makes it usable as a
+      # cross-plane carrier at all: a consumer on the user plane (a compositor config) and one on
+      # the system plane can both read the same table. See the module's own header.
+      nixosModules.desktops = ./modules/desktops.nix;
       systemManagerModules.monitors = ./modules/monitors.nix;
       systemManagerModules.layouts = ./modules/layouts.nix;
+      systemManagerModules.desktops = ./modules/desktops.nix;
+      homeManagerModules.desktops = ./modules/desktops.nix;
 
       # ── SESSIONS ──────────────────────────────────────────────────────────────────────────
       # A session instance: this user, this compositor, delivered this way, on this seat, with
