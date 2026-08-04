@@ -80,6 +80,11 @@ let
       # NixOS's masking surface -- `systemd.units.<name>.enable = false`. Declared here because
       # this module writes it for a VT-backed seated session (see `vtGettyMaskUnits`).
       systemd.units = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
+      # Read (never written) by `mkSeatedUnit`'s own `ExecStartPost=` bridge, and only for a
+      # `supportsNotify = true` compositor (niri, out of the box) -- see that option's own doc.
+      # Needed here so a lightweight fixture naming niri can force its rendered unit at all; every
+      # scroll fixture (`supportsNotify = false`) never touches this path regardless.
+      systemd.package = lib.mkOption { type = lib.types.package; default = pkgs.systemd; };
       users.users = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
     };
   };
@@ -259,6 +264,18 @@ let
     absoluteCompositorOverride
     { nixdesktop.launcher.compositors.scroll.supportsVirtualOutputs = false; }
     { nixdesktop.sessions.desk = seated { virtualOutputs = vo; }; }
+  ]);
+
+  # ── XDG_CURRENT_DESKTOP: THE ONE ESCAPE-HATCH PROOF ─────────────────────────────────────────────
+  # `currentDesktop`'s own doc already covers the estate's real fixture (`scroll`, exercised by
+  # `seatedCfg`/`headlessCfg` themselves — no separate fixture needed for that) and niri's
+  # fallback-to-`name` shape (`niriNoVirtualOutputsCfg`, already composed above, reused below rather
+  # than duplicated). This is the one shape neither already exercises: a consumer overriding the
+  # field explicitly, on a compositor whose BUILT-IN row already sets it, and winning.
+  currentDesktopOverrideCfg = evalWith (baseModules ++ [
+    absoluteCompositorOverride
+    { nixdesktop.launcher.compositors.scroll.currentDesktop = "custom-desktop"; }
+    { nixdesktop.sessions.desk = seated { }; }
   ]);
 
   # Trips modules/monitors.nix-style raw-name detection (§8 assertion 10): a device NAME shaped
@@ -518,6 +535,27 @@ let
 
     "the estate's real device names (ast, amd) trip no such rejection" =
       countMatching "shaped like a raw" (firedMessages seatedCfg) == 0;
+
+    # ── XDG_CURRENT_DESKTOP: NEVER EMPTY, AND MEASURED-CORRECT PER COMPOSITOR ───────────────────
+    # See `currentDesktop`'s own option doc (modules/launcher.nix) for the full, live-checked
+    # account of why "scroll" and not "sway" is the estate's real fixture's value.
+    "a seated session's unit carries XDG_CURRENT_DESKTOP=scroll (the estate's real fixture, compositor = scroll)" =
+      lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll") deskUnit.serviceConfig.Environment;
+
+    "a headless session's unit carries XDG_CURRENT_DESKTOP=scroll too -- the gap this closes is not seated-only" =
+      lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll") remoteUnit.serviceConfig.Environment;
+
+    "a compositor with no built-in currentDesktop entry (niri) falls through to its own declared name" =
+      lib.any (e: e == "XDG_CURRENT_DESKTOP=niri")
+        niriNoVirtualOutputsCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment;
+
+    "a consumer can override a built-in compositor's currentDesktop, and the override wins" =
+      lib.any (e: e == "XDG_CURRENT_DESKTOP=custom-desktop")
+        currentDesktopOverrideCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment;
+
+    "the override does not also leave the built-in value sitting in the same unit" =
+      !(lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll")
+        currentDesktopOverrideCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment);
   };
 
   # ── LAYER THREE: system-manager, LIGHTWEIGHT `evalModules` ────────────────────────────────────
@@ -598,6 +636,9 @@ let
 
     "SM: a seated session (the estate's real fixture) trips no headless-unsupported rejection" =
       countMatching "system-manager plane of" (firedMessages seatedCfgSm) == 0;
+
+    "SM: the seated unit carries XDG_CURRENT_DESKTOP=scroll, identically to the NixOS plane" =
+      lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll") deskUnitSm.serviceConfig.Environment;
   };
 
   # ── LAYER FOUR: system-manager, A REAL `system-manager.lib.makeSystemConfig` ──────────────────
@@ -708,6 +749,9 @@ let
 
     "REAL SYSTEM-MANAGER: the identical seated fixture that passes above does NOT fail the build" =
       !(realSystemManagerFails { nixdesktop.sessions.desk = seated { }; });
+
+    "REAL SYSTEM-MANAGER: the rendered seated unit's Environment carries XDG_CURRENT_DESKTOP=scroll" =
+      lib.hasInfix "XDG_CURRENT_DESKTOP=scroll\n" deskUnitTextSm;
   };
 
   # ── LAYER TWO: A REAL `lib.nixosSystem`, THE ACTUAL systemd/users MODULES ─────────────────────
@@ -814,6 +858,13 @@ let
     "REAL SYSTEM: lingering is rendered as a real systemd.tmpfiles.rules entry, never users.users" =
       lib.any (r: lib.hasInfix "/var/lib/systemd/linger/alice" r) realSystem.config.systemd.tmpfiles.rules
       && !(realSystem.config.users.users ? alice);
+
+    # ── XDG_CURRENT_DESKTOP, AGAINST THE REAL RENDERED UNIT TEXT, BOTH DELIVERY CLASSES ─────────
+    "REAL SYSTEM: the rendered seated unit's Environment carries XDG_CURRENT_DESKTOP=scroll" =
+      lib.hasInfix "XDG_CURRENT_DESKTOP=scroll\n" deskUnitText;
+
+    "REAL SYSTEM: the rendered headless unit's Environment carries XDG_CURRENT_DESKTOP=scroll too" =
+      lib.hasInfix "XDG_CURRENT_DESKTOP=scroll\n" remoteUnitText;
   };
 in
 report "launcher" (lightweightResults // realNixosSystemResults // lightweightSystemManagerResults // realSystemManagerResults)

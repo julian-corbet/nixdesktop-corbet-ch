@@ -347,8 +347,8 @@ let
   #     a session naming niri with `virtualOutputs != [ ]` must fail the build (see the assertion
   #     below) rather than silently producing a session with no display and no error.
   builtinCompositors = {
-    scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = null; supportsVirtualOutputs = true; supportsNotify = false; };
-    niri = { command = "niri --session"; env = [ ]; package = null; supportsVirtualOutputs = false; supportsNotify = true; };
+    scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = null; supportsVirtualOutputs = true; supportsNotify = false; currentDesktop = "scroll"; };
+    niri = { command = "niri --session"; env = [ ]; package = null; supportsVirtualOutputs = false; supportsNotify = true; currentDesktop = null; };
   };
 
   # Every name either table declares -- what "known" means for the assertion below. A name in
@@ -382,6 +382,12 @@ let
       package = pick "package" null;
       supportsVirtualOutputs = pick "supportsVirtualOutputs" false;
       supportsNotify = pick "supportsNotify" false;
+      # `name` ITSELF as the final fallback, not a literal "" -- see `currentDesktop`'s own option
+      # doc for why the compositor's own declared identifier is the honest default for any
+      # compositor this table has no more specific, measured entry for, and why that default is
+      # correct today for every compositor this repo ships a built-in row for at all (niri's row
+      # states `currentDesktop = null` explicitly, which is what routes it here).
+      currentDesktop = pick "currentDesktop" name;
     };
 
   # ── ExecStart MUST BE ABSOLUTE — systemd never consults $PATH for it ───────────────────────────
@@ -454,6 +460,14 @@ let
           "XDG_SEAT=${session.seat}"
           "XDG_SESSION_TYPE=wayland"
           "XDG_SESSION_CLASS=user"
+          # `entry.currentDesktop` -- see that option's own doc for what it resolves to per
+          # compositor and why. NEVER omitted: an EMPTY `XDG_CURRENT_DESKTOP` is not a smaller
+          # version of a correct one, it is exactly the state that let Electron's `safeStorage`
+          # sniff nothing and persist a secret-store backend choice this session never made on
+          # purpose (see that option's own doc for the full account) -- so this line is
+          # unconditional, matching every other seat-identity var immediately above it, never
+          # gated behind an `lib.optional`.
+          "XDG_CURRENT_DESKTOP=${entry.currentDesktop}"
           # `PATH`, WITHOUT WHICH `spawn "fuzzel"`-SHAPED BARE NAMES SILENTLY GO NOWHERE -- MEASURED
           # LIVE, NOT ASSUMED (2026-08-02). This unit's Environment= is rendered AFTER whichever
           # base PATH the plane's own systemd machinery injects by default (confirmed by reading the
@@ -653,6 +667,11 @@ let
           # belongs to -- correct for every user this shared unit definition ever loads under,
           # without this module ever needing to know a uid.
           "XDG_RUNTIME_DIR=/run/user/%U"
+          # Same var, same reasoning, same `entry.currentDesktop` as `mkSeatedUnit` -- see that
+          # option's own doc. A headless session is exactly as capable of running an Electron app
+          # or a portal-mediated one (an agent driving a browser has no seat, not no desktop
+          # identity), so the gap this closes is not seated-only.
+          "XDG_CURRENT_DESKTOP=${entry.currentDesktop}"
         ] ++ lib.mapAttrsToList (k: v: "${k}=${v}") session.extraEnvironment;
 
         # No device resolution needed at all: modules/session.nix already asserts a headless
@@ -899,6 +918,93 @@ in
               close on `niri` -- state `true` yourself once you have actually verified a new
               compositor the same way, never on the assumption that "notify-capable" is the
               common case.
+            '';
+          };
+
+          currentDesktop = mkOption {
+            type = types.nullOr types.str;
+            default = null;
+            example = "scroll";
+            description = ''
+              What this compositor's session is HONESTLY called, for the one purpose that has
+              nothing to do with launching it: `XDG_CURRENT_DESKTOP` on the rendered unit's own
+              `Environment=` (see `mkSeatedUnit`/`mkHeadlessUnit`, both of which append an
+              `XDG_CURRENT_DESKTOP=<value>` line unconditionally -- there is no session this repo
+              renders for which the variable is legitimately absent).
+
+              LEFT EMPTY BEFORE THIS OPTION EXISTED, AND THAT ALREADY COST REAL DATA. Electron's
+              `safeStorage` picks its secret-store backend by sniffing this variable at first run
+              and PERSISTS the choice in the app's own config; it cannot unseal its own key once
+              that backend later disappears. An empty variable does not merely mis-set a cosmetic
+              string -- it feeds Chromium's desktop-environment sniff (`base::nix::
+              GetDesktopEnvironment()`) nothing to recognise, and a session with nothing else
+              running to disambiguate can walk that same guesswork into a backend nobody chose on
+              purpose. `.desktop` `OnlyShowIn=`/`NotShowIn=` filtering and xdg-desktop-portal's own
+              backend selection read the identical variable, so the gap reaches well past Electron.
+
+              `null` by default -- the file-wide "did a definition actually touch this field"
+              discipline `command`/`package`/`supportsNotify` above already use, via `pick`, so a
+              consumer overriding one other field of a built-in row never silently loses this one.
+
+              THE VALUE ITSELF IS NOT "the compositor's name, dressed up" -- for `scroll`
+              specifically it is MEASURED, not guessed, and the measurement contradicts the more
+              obvious guess. `scroll` is a sway fork (`sway-unwrapped` is the real package it is
+              built from -- see `supportsNotify`'s own comment above), which makes "sway" the
+              tempting answer; it is also the WRONG one, checked live against the actual estate
+              (the Elitebook, 2026-08-04):
+
+                - xdg-desktop-portal's own binary contains the literal format string
+                  `%s-portals.conf`, filled in per colon-separated entry of `$XDG_CURRENT_DESKTOP`
+                  (`strings /usr/lib/xdg-desktop-portal` shows both that format string and a direct
+                  reference to `XDG_CURRENT_DESKTOP` in the same binary).
+                - the `sway-scroll` AUR package -- scroll's own upstream author's packaging, per
+                  hosts/elitebook/session.nix's own comment -- ships
+                  `/usr/share/xdg-desktop-portal/scroll-portals.conf` (`pacman -Ql sway-scroll`),
+                  a real `[preferred]` block picking the `wlr` ScreenCast/Screenshot implementation
+                  -- exactly the portal backend a wlroots compositor needs, and discoverable ONLY
+                  when an entry in `$XDG_CURRENT_DESKTOP` literally reads "scroll".
+                - there is no `sway-portals.conf` ANYWHERE on that same host (`find / -iname
+                  sway-portals.conf` -- nothing) and no `sway` package installed at all (`pacman -Qi
+                  sway` -- not installed). "sway" would have resolved to precisely the same nothing
+                  the empty variable already did, for the one file that exists to be found.
+                - nixscroll's own default startup config (`home/scroll.nix`) already assumes this
+                  variable arrives PRE-SET on the compositor's own process: `exec
+                  dbus-update-activation-environment --systemd ... XDG_CURRENT_DESKTOP ...` is one
+                  of its default `exec` lines, re-exporting whatever this unit hands the compositor
+                  into the D-Bus activation environment and the `--user` manager's own environment
+                  block -- which is how every OTHER session component (home/session.nix's bar,
+                  keyring, polkit agent, the portal daemons themselves, all separate `--user` units)
+                  ends up seeing it too. That line has been re-exporting an EMPTY value this whole
+                  time; this option is what finally gives it something real to carry.
+
+              So `builtinCompositors.scroll` states `currentDesktop = "scroll"` explicitly, a
+              measured fact keyed by scroll's own AUR-packaged portal config, not a placeholder that
+              happens to match the compositor's name. `builtinCompositors.niri` states `null`
+              deliberately, on the same "measured, not assumed" discipline `supportsNotify` already
+              applies per compositor: nothing in this repo has verified what niri itself expects
+              here the way scroll was just checked line-by-line against a real host, so it falls
+              through to the general default below rather than asserting a guess as a built-in fact.
+
+              THE GENERAL DEFAULT, for any compositor (niri included) with no entry here at all:
+              `compositorEntry`'s own `name` argument -- the exact string
+              `nixdesktop.sessions.<name>.compositor` was declared with. A compositor's own declared
+              identifier is the one honest thing this module already knows about it without
+              guessing, and it is what upstream convention already does for a standalone Wayland
+              compositor with no rebrand to hide behind (sway sets `sway`, Hyprland sets
+              `Hyprland`, niri sets `niri`) -- scroll is the one name in this table that had
+              actually drifted from that convention in the tempting direction, and only because it
+              is a fork wearing another project's skin underneath.
+
+              A SINGLE STRING, NEVER A LIST, even though `XDG_CURRENT_DESKTOP` is itself
+              colon-separated and may carry several entries (the XDG Desktop Entry Specification's
+              own `OnlyShowIn`/`NotShowIn` wording: "a list of strings identifying the desktop
+              environments that will [not] display a given desktop entry"). No consumer of this
+              table has a MEASURED need for a second entry -- the whole finding above is that ONE
+              correct entry beats the plausible-sounding one it replaced, not that more entries
+              beat fewer. Nothing here enforces single-token-ness either: this is a plain `str`, so
+              a consumer who does one day measure a genuine second-entry need writes the
+              colon-joined value directly (`currentDesktop = "scroll:sway";`) rather than this
+              option growing a second, list-shaped surface for a case nobody has hit yet.
             '';
           };
         };
