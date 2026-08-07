@@ -116,5 +116,23 @@ in
     # the standalone CLI. On Arch it IS a separate install (an optdepend), which is why the two
     # backends legitimately differ on this one.
     services.tumbler.enable = lib.mkIf (fileManager == "thunar") true;
+
+    # THE SAME GAP AS `portals`/`programs.thunar` ABOVE, one role over: `roles.theming` (see
+    # lib/nixos-roles.nix) puts `qt6Packages.qt6ct` — a Qt platform-theme CONFIGURATOR — into
+    # `environment.systemPackages`, and a configurator nothing points at configures nothing. Qt
+    # only loads a platform theme plugin that `QT_QPA_PLATFORMTHEME` names; there is no default,
+    # no auto-detection, and no bare Wayland session sets it on its own. Installing qt6ct without
+    # this is exactly the `pkgs.gvfs`-without-`services.gvfs.enable` trap this whole file exists
+    # to close for every other role — a package the desktop never actually asked anything to use.
+    #
+    # `environment.sessionVariables`, not `environment.variables`: the doc on that option states
+    # the reason directly — these are "set by PAM early in the login process", which is what
+    # reaches a session started through `PAMName=` (nixdesktop.launcher's seated unit shape, the
+    # one every host that turns `theming` on actually runs), not merely a login shell's `/etc/
+    # profile`. `environment.variables` alone would style a terminal-launched Qt app and leave
+    # everything the compositor itself spawns unstyled — the one class of app this role is for.
+    environment.sessionVariables = lib.mkIf (want.theming or false) {
+      QT_QPA_PLATFORMTHEME = "qt6ct";
+    };
   };
 }

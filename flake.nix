@@ -196,6 +196,19 @@
       # default`) never drags a NixOS-only module along.
       nixosModules.backend = ./modules/nixos-backend.nix;
 
+      # ── theming, THE SYSTEM-MANAGER HALF ──────────────────────────────────────────────────
+      # `modules/nixos-backend.nix` (just above) wires `want.theming`'s installed `qt6ct` to
+      # `environment.sessionVariables.QT_QPA_PLATFORMTHEME` inline, because on NixOS that option
+      # IS the real mechanism (PAM-injected, per its own doc). system-manager has a same-named
+      # option that is NOT the real mechanism there — see modules/theming-environment.nix's own
+      # header for the measured, live-checked reason — so the system-manager half needs a
+      # genuinely different write and cannot share nixos-backend.nix's line. Not `.default`, for
+      # the identical reason `nixosModules.backend` above isn't either: opt-in, so importing
+      # `systemManagerModules.desktop` alone (the role declaration) never silently starts writing
+      # `/etc/environment` underneath a consumer who has no `theming` role or no package backend
+      # resolving it at all.
+      systemManagerModules.themingEnvironment = ./modules/theming-environment.nix;
+
       # ── OO7 KEYRING: THE SYSTEM-LEVEL HALF ────────────────────────────────────────────────
       # `home/session.nix`'s own `nixdesktop.session.keyring.oo7` (a home-manager module) wires
       # the DAEMON unit and its `LoadCredentialEncrypted=`, but has no way to PROVISION that
@@ -350,6 +363,14 @@
             inherit pkgs sessionModule nixpkgs system;
             launcherModuleNixos = launcherModuleNixos;
             launcherModuleSystemManager = launcherModuleSystemManager;
+            systemManagerLib = system-manager.lib;
+          };
+          # The system-manager half of the QT_QPA_PLATFORMTHEME fix (modules/theming-environment.
+          # nix) -- same `system-manager.lib.makeSystemConfig` discipline as `launcher` above, for
+          # the same reason: proving `environment.etc.environment` against a stub would prove
+          # nothing about whether it actually type-checks on system-manager's own real module tree.
+          theming-environment = import ./checks/theming-environment.nix {
+            inherit pkgs;
             systemManagerLib = system-manager.lib;
           };
         });

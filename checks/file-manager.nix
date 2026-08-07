@@ -182,6 +182,14 @@ let
     "theming off installs none of it" =
       !(hasNamed "nwg-look" plain) && !(hasNamed "adw-gtk3" plain);
 
+    # A package a nothing points at configures nothing -- see modules/nixos-backend.nix's own
+    # comment on this line. Qt only loads the platform theme QT_QPA_PLATFORMTHEME names.
+    "theming sets QT_QPA_PLATFORMTHEME to the role it just installed, not merely the package" =
+      full.environment.sessionVariables.QT_QPA_PLATFORMTHEME or null == "qt6ct";
+
+    "theming off sets no platform theme -- nothing installed for it to name" =
+      !(plain.environment.sessionVariables ? QT_QPA_PLATFORMTHEME);
+
     # ── fileManagerExtras' archiver ───────────────────────────────────────────────────────────
     #
     # The archive plugin dispatches to an archive manager through a `.tap` wrapper script it looks
@@ -198,11 +206,12 @@ let
     "a disabled profile publishes an empty want" =
       disabled.nixdesktop.want == { };
 
-    "...so none of the four real options this backend writes are turned on" =
+    "...so none of the five real options this backend writes are turned on" =
       !disabled.programs.thunar.enable
       && !disabled.services.gvfs.enable
       && !disabled.services.tumbler.enable
-      && !disabled.xdg.portal.enable;
+      && !disabled.xdg.portal.enable
+      && !(disabled.environment.sessionVariables ? QT_QPA_PLATFORMTHEME);
 
     "...and not one file-manager package is installed either" =
       !(hasNamed "thunar" disabled)
