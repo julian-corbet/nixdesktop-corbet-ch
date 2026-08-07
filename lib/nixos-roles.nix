@@ -244,14 +244,15 @@ rec {
     # with an ambient /usr/bin this never comes up; here it is the entire difference between a
     # working archive manager and a window that lists three formats.
     #
-    # `unar`, NOT `unrar`, for RAR. engrampa ships BOTH a `rar` backend (unrar/unrar-free) and an
-    # `unarchiver` backend (unar/lsar) — read out of the source, both are real. nixpkgs' `unrar`
-    # is unfree, and a fleet host should not take an allowUnfree carve-out for one format when a
-    # free reader for the same format is right there. Extraction only, which is what RAR is for.
-    #
-    # `p7zip`, not `_7zz`: the latter ships its binary as `7zz` only, and `7z` is the name the
-    # backend calls. Same trap shape as the qt6ct alias — the wrong choice resolves fine and then
-    # does nothing.
+    # 7z and RAR are NOT listed below, even though engrampa dispatches to them the same way as
+    # everything else here: `p7zip` (7z, and engrampa's ARJ path) and `unar` (engrampa's free
+    # `unarchiver` backend for RAR, in preference to the unfree `unrar`) now come from nixsh
+    # instead of from this role. nixsh is the universal shell layer — every host gets it, GUI or
+    # headless, because every host has a shell — so a host that also carries this GUI archive
+    # manager can rely on those two CLI backends already being on its PATH rather than this role
+    # declaring a second copy of them. That is the correct layering: a GUI depends on CLI backends
+    # existing, it does not own them. See nixsh for the packages themselves and the unar-vs-unrar /
+    # p7zip-vs-_7zz reasoning that used to live here.
     #
     # No `unace`: not in nixpkgs at all. ACE is a dead format with one proprietary implementation;
     # the Arch table carries it because Arch still packages it, and this asymmetry is a fact about
@@ -260,8 +261,7 @@ rec {
       pkgs.engrampa
 
       # Formats worth having, one package per fr-command backend that needs an external tool.
-      pkgs.p7zip # 7z, and engrampa's ARJ path
-      pkgs.unar # rar (free; see above)
+      # (The 7z and RAR backends, p7zip and unar, come from nixsh now — see the comment above.)
       pkgs.lhasa # lha/lzh
       pkgs.lrzip # lrzip
       pkgs.lzop # lzo
