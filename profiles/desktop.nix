@@ -247,6 +247,28 @@ in
       '';
     };
 
+    browsers = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Web browsers: Firefox and Chromium, both together — not a single named choice the way
+        `fileManager`/`polkitAgent`/`keyring` above are. A browser role with one implementation
+        would force a pick nixdesktop has no basis for; a working desktop routinely wants both at
+        once (Chromium for its devtools/PWA-install path, Firefox as the daily driver), and
+        neither substitutes for the other the way any two file managers do. So this is a flat
+        boolean over a fixed pair, matching `fileManagerExtras`/`gvfsBackends`/`theming` above
+        rather than the single-choice roles.
+
+        Off by default, for the same reason those three are: nothing else in this profile needs a
+        browser to function, and a large, opinionated pair of packages should be asked for rather
+        than inherited by every consumer of this profile.
+
+        Available on both platforms under the same two names — Arch's official repos and nixpkgs
+        both carry `firefox` and `chromium` outright, so unlike `gvfsBackends` there is no
+        per-platform asymmetry here for a consumer to know about.
+      '';
+    };
+
     extraComponents = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -293,6 +315,7 @@ in
       fileManagerExtras
       gvfsBackends
       theming
+      browsers
       extraComponents
       ;
   };

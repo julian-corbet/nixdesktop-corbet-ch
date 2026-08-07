@@ -296,6 +296,18 @@ rec {
     # by evaluation. qt6ct is the same package the `polkit-kde-agent` entry above already carries
     # for its own reason; `lib.unique` in `packagesFor` makes choosing both free.
     theming = [ pkgs.nwg-look pkgs.adw-gtk3 pkgs.qt6Packages.qt6ct ];
+
+    # Both top-level nixpkgs attributes, no throwing alias behind either name (unlike qt6ct just
+    # above) — confirmed by forcing `.drvPath` on both, not merely checking `hasAttrByPath`, since
+    # a throwing alias still passes that check. `chromium` here is the real open-source browser
+    # (BSD-3-Clause; `meta.homepage` reads chromium.org, matching Arch's own package URL) and NOT
+    # `google-chrome`, whose unfree license nixpkgs gates behind `nixpkgs.config.allowUnfree` —
+    # this entry needs no such override, verified by evaluating it with no unfree config set.
+    # Neither package needs anything beyond an ordinary `environment.systemPackages` entry: no
+    # NixOS option comparable to `programs.thunar.enable` gates a browser, so — unlike
+    # `fileManagers`/`polkitAgents`/`keyrings` above — this capability is exactly as thin here as
+    # it is on the Arch side.
+    browsers = [ pkgs.firefox pkgs.chromium ];
   };
 
   # Not a capability (no `want.portals`-shaped boolean loop reaches this) — see the comment on
