@@ -1,22 +1,21 @@
-# The three roles this profile added that produce nothing but PACKAGES — `syntheticTyping`,
-# `iconThemes` and `inputAutomation` — proven against the real NixOS backend, in both directions.
+# The two roles this profile fills with nothing but a PACKAGE — `syntheticTyping` and
+# `inputAutomation` — proven against the real NixOS backend, in both directions.
 #
 # WHY THEY SHARE A FILE. checks/file-manager.nix and checks/input-substrate.nix each exist because
 # their role's package is only half the mechanism on NixOS: the other half is a nixpkgs option
 # (`programs.thunar.enable`, `services.keyd.enable`) that the package alone does not imply, and
-# forgetting it produces the silent failure those files are built to catch. None of these three is
-# like that. `wtype` is an unprivileged Wayland client and an icon theme is a directory of files;
-# on both platforms the package IS the whole mechanism, and there is no option half to forget. What
-# is worth proving about them is therefore the same single question — does the role reach
-# `environment.systemPackages`, and does the unfilled role reach nothing — so they are tested
-# together rather than in three files that would differ only in a string.
+# forgetting it produces the silent failure those files are built to catch. Neither of these two is
+# like that. `wtype` is an unprivileged Wayland client, so the package IS the whole mechanism and
+# there is no option half to forget. What is worth proving about them is therefore the same single
+# question — does the role reach `environment.systemPackages`, and does the unfilled role reach
+# nothing — so they are tested together rather than in two files that would differ only in a string.
 #
 # `inputAutomation` IS THE NEAR MISS, and it is here rather than beside the input substrate for a
 # precise reason. Its package is genuinely a partial answer on NixOS — `programs.ydotool.enable`
 # supplies the group and the `/dev/uinput` access that the derivation does not — but this profile
 # deliberately does NOT wire that option (it also starts a standing input-injection daemon; see
 # lib/nixos-roles.nix's own entry). So what the role does is install a package and nothing else,
-# exactly like the two above it, and what has to be proven is exactly the same question. The
+# exactly like the one above it, and what has to be proven is exactly the same question. The
 # assertion that it wires no option is part of that proof rather than an afterthought: a later edit
 # that "completed" the role by turning `programs.ydotool.enable` on would start a daemon nobody
 # asked for, and it must fail here.
@@ -24,9 +23,8 @@
 # `lib.evalModules` + a stub would NOT do here, for checks/file-manager.nix's reason: what is under
 # test is the package list a real NixOS evaluation ends up with, and a stub declaring
 # `environment.systemPackages` as `listOf anything` would accept the write without ever forcing the
-# derivations behind it. `iconThemes` in particular resolves free-form strings through
-# `pkgs.${name}`, so forcing is the entire point — an unresolvable name must be an error rather
-# than a silently absent theme.
+# derivations behind it. `inputAutomation` adds a second reason of its own — the thing that has to
+# stay false is one of nixpkgs' OWN options, which no stub could report on at all.
 { pkgs, nixpkgs, system, lib ? pkgs.lib }:
 let
   support = import ./support.nix { inherit pkgs lib; };
@@ -52,7 +50,6 @@ let
 
   typing = configFor (desktop { syntheticTyping = true; });
   automating = configFor (desktop { inputAutomation = true; });
-  themed = configFor (desktop { iconThemes = [ "papirus-icon-theme" ]; });
   unfilled = configFor (desktop { });
   disabled = configFor { nixdesktop.desktop = { enable = false; compositor = "niri"; }; };
 
@@ -60,19 +57,6 @@ let
   # quietly stop matching after a bump.
   pnames = cfg: map (p: p.pname or p.name or "") cfg.environment.systemPackages;
   has = n: cfg: lib.elem n (pnames cfg);
-
-  # A theme name that is not a nixpkgs attribute. `iconThemes` resolves through `pkgs.${name}`, so
-  # this must fail the evaluation outright rather than resolve to nothing -- a host whose declared
-  # theme is silently absent gets a session that falls back to hicolor and no error anywhere.
-  unresolvableTheme = support.evalThrows [
-    { options.environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.anything; default = [ ]; }; }
-    ../profiles/desktop.nix
-    ../modules/nixos-backend.nix
-    {
-      nixdesktop.nixosBackend.enable = true;
-      nixdesktop.desktop = { enable = true; compositor = "niri"; iconThemes = [ "definitely-not-a-nixpkgs-attribute" ]; };
-    }
-  ];
 
   results = {
     # ── syntheticTyping ───────────────────────────────────────────────────────────────────────
@@ -122,33 +106,13 @@ let
     "an unfilled inputAutomation installs no automation tool" =
       !(has "ydotool" unfilled);
 
-    # ── iconThemes ────────────────────────────────────────────────────────────────────────────
-    "iconThemes installs the named theme package" =
-      has "papirus-icon-theme" themed;
-
-    # INSTALLING IS NOT SELECTING: the option must not write a theme NAME anywhere. Nothing in this
-    # backend sets `gtk-icon-theme-name` or its Qt/cursor counterparts, and a regression that
-    # started doing so would silently override a consumer's own home-manager `gtk` block.
-    "...and selects nothing: no session variable names a theme" =
-      !(themed.environment.sessionVariables ? GTK_ICON_THEME_NAME)
-      && !(themed.environment.sessionVariables ? XCURSOR_THEME);
-
-    # The empty default is what every existing consumer evaluates. A regression that installed a
-    # default theme would put an opinionated asset on every desktop in the family.
-    "an empty iconThemes installs no theme at all" =
-      !(has "papirus-icon-theme" unfilled);
-
-    "an unresolvable theme name fails the evaluation rather than resolving to nothing" =
-      unresolvableTheme;
-
     # ── The profile off entirely ──────────────────────────────────────────────────────────────
     #
-    # `nixdesktop.want` is `{}` here, so `packagesFor` short-circuits before any of the three is
+    # `nixdesktop.want` is `{}` here, so `packagesFor` short-circuits before either of the two is
     # read.
-    "a disabled profile installs none of them" =
+    "a disabled profile installs neither" =
       !(has "wtype" disabled)
-      && !(has "ydotool" disabled)
-      && !(has "papirus-icon-theme" disabled);
+      && !(has "ydotool" disabled);
   };
 in
 report "asset-roles" results
