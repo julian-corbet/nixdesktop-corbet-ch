@@ -343,6 +343,33 @@ rec {
     # both backends instead of being a package on one platform and an option on the other.
     syntheticTyping = [ pkgs.wtype ];
 
+    # General input automation: `ydotool`, which is the OTHER candidate the entry above declines,
+    # taken here on its own terms rather than as a substitute for it. See the `inputAutomation`
+    # option in profiles/desktop.nix for why the two are separate roles — that one types text
+    # through a compositor protocol, this one writes keys, pointer motion, buttons and scroll into
+    # `uinput`, which is a superset in capability and a subset in nothing. Both forced to real
+    # derivations (`.drvPath`), and `ydotool` is a plain top-level attribute with no alias behind
+    # it; `bin/` on the realized path holds `ydotool` and `ydotoold`, the same two commands the
+    # Arch package installs.
+    #
+    # A PARTIAL ANSWER ON THIS PLATFORM, AND MORE PARTIAL THAN ON ARCH — the same shape
+    # `inputRemappers` above and `portalPackages` below already have here, and stated for the same
+    # reason. `ydotool` speaks to `ydotoold`, a daemon holding `/dev/uinput`; the derivation ships
+    # both binaries and a user unit under `share/systemd/user`, and NO udev rule and no group, so
+    # `/dev/uinput` stays root-only and an ordinary user's daemon cannot open it. nixpkgs' own
+    # `programs.ydotool.enable` is what supplies the group and the device access.
+    #
+    # IT IS DELIBERATELY NOT WIRED, WHICH IS THE ONE PLACE THIS ROLE DIVERGES FROM keyd's. That
+    # option does not merely register a mechanism the way `services.keyd.enable` and
+    # `xdg.portal.extraPortals` do — it also RUNS `ydotoold`, a standing process able to inject
+    # input into every window on the seat. Turning that on as a side effect of "install the
+    # automation tool" would be this profile making a security decision on a consumer's behalf, and
+    # it would also break the symmetry the role does have: the Arch backend installs and starts
+    # nothing either, because that package's own unit ships disabled. So both platforms deliver
+    # exactly the tool, both say what is still missing, and a consumer that wants the daemon
+    # enables it through the option (here) or the vendor unit (there).
+    inputAutomation = [ pkgs.ydotool ];
+
     # Both top-level nixpkgs attributes, no throwing alias behind either name (unlike qt6ct just
     # above) — confirmed by forcing `.drvPath` on both, not merely checking `hasAttrByPath`, since
     # a throwing alias still passes that check. `chromium` here is the real open-source browser

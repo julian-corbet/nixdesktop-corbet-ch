@@ -345,6 +345,49 @@ in
       '';
     };
 
+    inputAutomation = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Install a general input-automation tool: one that synthesizes keyboard AND pointer events
+        at the DEVICE layer, below the compositor, rather than through a Wayland protocol.
+        `ydotool` is what both backends resolve this to.
+
+        THE THIRD ROLE ABOUT KEYS IN THIS PROFILE, and the one whose boundary is worth drawing
+        explicitly, because the obvious reading — "so it is the other `syntheticTyping`, or another
+        entry in `input`'s enum" — is wrong in both directions.
+
+        NOT `input`. That role is a REMAPPING daemon: it takes an event that already exists and
+        rewrites it into a different one, and it is an enum precisely because remapping is
+        exclusive — two daemons claiming the same devices fight. This synthesizes events that no
+        human produced, remaps nothing, and competes with nothing, so it is a boolean a host turns
+        on alongside whatever remapper it does or does not run.
+
+        NOT `syntheticTyping` EITHER, and the difference is capability, not implementation taste.
+        That one is a compositor CLIENT: it types TEXT into the focused window through
+        `virtual-keyboard-v1`, so it exists only inside a session whose compositor exposes that
+        protocol, and it cannot move a pointer or click. This is a `uinput` writer: it produces
+        keys, pointer motion, buttons and scroll, it works against a compositor that gates or
+        never implements the virtual-keyboard protocol, and it works with no compositor at all
+        (a TTY, a login screen). A host can want both; most hosts that automate anything do.
+
+        WHAT THE PACKAGE ALONE IS NOT, on either platform, because this role installs the package
+        and nothing else. The tool is a client that talks to `ydotoold`, a daemon holding
+        `/dev/uinput` open, and injecting anything needs that daemon running and that device
+        reachable. Neither backend starts it, and the two platforms leave DIFFERENT amounts of the
+        rest done: the Arch package ships both binaries, a disabled user unit and a udev rule
+        granting the `input` group access to `/dev/uinput`, so a consumer there enables one unit;
+        nixpkgs ships the two binaries and the same unit file but NO udev rule and no group, and
+        `programs.ydotool.enable` is the NixOS option that supplies those — deliberately not
+        wired here, because it also STARTS the daemon, and a persistent process that can inject
+        input into every other window is a decision a consumer makes, not a side effect of asking
+        for a tool. Each backend's table states its own half; neither pretends the package was the
+        whole mechanism.
+
+        Off by default, like `syntheticTyping` above and for a stronger version of the same reason.
+      '';
+    };
+
     browsers = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -487,6 +530,7 @@ in
       theming
       iconThemes
       syntheticTyping
+      inputAutomation
       browsers
       appIndicators
       duplicateFinder
