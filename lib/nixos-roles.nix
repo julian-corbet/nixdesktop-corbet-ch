@@ -225,6 +225,16 @@ rec {
     clipboardHistory = [ pkgs.cliphist pkgs.wl-clipboard ];
     idleAndLock = [ pkgs.swayidle pkgs.swaylock ];
 
+    # BOTH application-indicator libraries -- see nixdesktop's own `appIndicators` option for why
+    # "both" is the point rather than an unpruned leftover: the sonames differ
+    # (`libappindicator3.so.1` vs `libayatana-appindicator3.so.1`), so a consumer that dlopens one
+    # cannot find the other, and the ecosystem never finished migrating.
+    #
+    # Two separate nixpkgs attributes, both forced to real derivations rather than assumed to
+    # exist (the legacy one's own pname carries a `-gtk3` suffix the attribute does not, which is
+    # exactly the kind of near-miss an existence check waves through).
+    appIndicators = [ pkgs.libappindicator pkgs.libayatana-appindicator ];
+
     # A graphical duplicate/waste finder. ONE nixpkgs attribute provides the GUI here — its
     # `meta.mainProgram` is the GUI binary (checked, not assumed), so no variant selection is
     # needed on this platform. Arch splits the GUI and the headless build into separate package

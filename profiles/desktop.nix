@@ -299,6 +299,43 @@ in
       '';
     };
 
+    appIndicators = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        The tray-icon substrate: BOTH application-indicator libraries, the legacy one and its
+        maintained fork, together.
+
+        WHY BOTH, WHICH LOOKS LIKE AN OVERSIGHT AND IS NOT. They are not two builds of one thing
+        and they are not interchangeable — they ship DIFFERENT SONAMES
+        (`libappindicator3.so.1` versus `libayatana-appindicator3.so.1`). A program built or
+        `dlopen`ing against one simply does not find the other; there is no compatibility symlink
+        and no fallback in the loader. The ecosystem never finished migrating, so a desktop that
+        installs only the fork silently has no tray for whichever half of its applications still
+        reach for the original name. Installing one and calling the other legacy is the mistake
+        this role exists to prevent.
+
+        A SUBSTRATE, NOT AN APPLICATION, which is why it is a role at all. Nothing here is
+        something a user runs. These are libraries that a bar's status-notifier host and the
+        applications feeding it both need to be present for a tray icon to appear — the same
+        shape as the `input` role above, one layer over: infrastructure below the visible
+        components, whose absence shows up as a feature quietly missing rather than an error.
+
+        WHY ITS CONSUMERS ARE INVISIBLE TO A PACKAGE MANAGER, worth stating because it changes how
+        you check. These libraries are `dlopen`ed at runtime, not linked, so a distribution's
+        reverse-dependency query reports no dependents at all and reads exactly like "nothing uses
+        this". Inspecting a process map is no better unless a tray application happens to be
+        running at that moment. Scanning installed binaries for the soname is what actually
+        settles it — and on a real host it finds real consumers: a major cross-platform game/media
+        library references the legacy name for its tray support, and so does a widely used desktop
+        application framework's build tool. Both, in fact, reference BOTH names, which is the
+        clearest possible statement that the split is live.
+
+        Off by default, and a boolean over a fixed pair rather than a named choice, matching
+        `browsers` above: "pick one" is precisely the wrong interface here.
+      '';
+    };
+
     duplicateFinder = lib.mkOption {
       type = lib.types.bool;
       default = false;
@@ -381,6 +418,7 @@ in
       gvfsBackends
       theming
       browsers
+      appIndicators
       duplicateFinder
       extraComponents
       ;
