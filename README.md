@@ -91,7 +91,7 @@ that works with exactly one compositor.
 | Module | Class | Owns |
 |---|---|---|
 | `desktop` | system-manager / NixOS | the role policy, including `compositor`; publishes `nixdesktop.want` |
-| `backend` | NixOS | resolves `nixdesktop.want` into `environment.systemPackages`, plus the real NixOS options a role needs to actually work (`xdg.portal`, `services.gvfs`, `programs.thunar`, `services.tumbler`); nixarch ships the Arch/CachyOS one |
+| `backend` | NixOS | resolves `nixdesktop.want` into `environment.systemPackages`, plus the real NixOS options a role needs to actually work (`xdg.portal`, `services.gvfs`, `programs.thunar`, `services.tumbler`, `services.keyd`); nixarch ships the Arch/CachyOS one |
 | `homeManagerModules.session` | home-manager | turns bar/notifier/osd/patchbay/idle/polkit/keyring into systemd user services |
 | `homeManagerModules.waybar` | home-manager | bar config + style |
 | `homeManagerModules.mako` | home-manager | notification daemon config |

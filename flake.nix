@@ -347,6 +347,10 @@
           # the booleans modules/nixos-backend.nix sets, so a stub that merely accepted those
           # writes would prove nothing about what they cause. See that file's own header.
           file-manager = import ./checks/file-manager.nix { inherit pkgs nixpkgs system; };
+          # The `input` role, and a real `nixosSystem` for the same reason file-manager is: what is
+          # under test is what nixpkgs' own `services/hardware/keyd.nix` does downstream of the one
+          # boolean modules/nixos-backend.nix sets. The package alone is not a running daemon.
+          input-substrate = import ./checks/input-substrate.nix { inherit pkgs nixpkgs system; };
           monitor-identity = import ./checks/monitor-identity.nix { inherit pkgs; };
           layout-geometry = import ./checks/layout-geometry.nix { inherit pkgs; };
           # `sessionModule` is passed already closed over nixhost's `probeFact`/`collectProbes`,

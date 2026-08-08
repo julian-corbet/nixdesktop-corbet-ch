@@ -184,6 +184,19 @@ rec {
 
   osds.swayosd = [ pkgs.swayosd ];
 
+  # The input substrate — a keyboard remapping daemon below the compositor. See the `input` option
+  # in profiles/desktop.nix for why that layer is a role of its own.
+  #
+  # A PARTIAL ANSWER, AND IT SAYS SO — the same shape `fileManagers` above and `portalPackages`
+  # below already have on this platform. `pkgs.keyd` in `environment.systemPackages` gives you the
+  # CLIENT binaries (`keyd monitor` to watch events, `keyd reload` to re-read config), which are
+  # genuinely worth having on PATH. It gives you no daemon: nixpkgs' own `services.keyd` module is
+  # what defines the unit, creates the `keyd` group and renders `/etc/keyd`, and it does NOT add
+  # the package to `environment.systemPackages` itself (verified against a real `nixosSystem`
+  # evaluation, not assumed). So the two halves are complementary rather than redundant, and
+  # modules/nixos-backend.nix wires the option half whenever this role is filled.
+  inputRemappers.keyd = [ pkgs.keyd ];
+
   # ── Capability roles: booleans in `want`, package sets here ─────────────────────────────────
   #
   # `portals` is deliberately NOT a key here, unlike nixarch's table. On Arch, "install the portal
@@ -360,6 +373,7 @@ rec {
       ++ resolve polkitAgents (want.polkitAgent or null)
       ++ resolve keyrings (want.keyring or null)
       ++ resolve osds (want.osd or null)
+      ++ resolve inputRemappers (want.input or null)
       ++ lib.optionals (want.launcher or null != null) [ pkgs.${want.launcher} ]
       ++ lib.optionals (want.terminal or null != null) [ pkgs.${want.terminal} ]
       ++ lib.concatLists (lib.mapAttrsToList

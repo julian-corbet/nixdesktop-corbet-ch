@@ -151,6 +151,36 @@ in
       '';
     };
 
+    input = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "keyd" ]);
+      default = null;
+      description = ''
+        Keyboard remapping daemon, or null for none — the INPUT SUBSTRATE, which sits BELOW the
+        compositor rather than inside it. That placement is the whole reason this is a role of its
+        own instead of a compositor keybind: a daemon of this class rewrites events at the
+        evdev/uinput layer, so its mappings are in force in a TTY, in the display manager, in
+        every compositor and in an X11 session alike, and they survive a compositor restart. A
+        compositor's own keybinds can do none of that — they exist only while that compositor is
+        running and only for the windows it owns.
+
+        `keyd` is the one implementation this table knows. It reads `/etc/keyd/*.conf` and runs as
+        a system daemon.
+
+        THIS ROLE INSTALLS AND ENABLES; IT DOES NOT CONFIGURE. nixdesktop has no opinion about
+        which key should become which — that is exactly the kind of personal decision a shared
+        policy layer should stay out of, the same stance `theming` takes for appearance. A
+        remapping daemon with no config file remaps nothing and costs nothing; writing
+        `/etc/keyd/default.conf` is the consumer's own job.
+
+        NOT SYMMETRIC ACROSS PLATFORMS, and both backends say so in their own tables. On Arch the
+        package ships the daemon, its systemd unit and its udev rules into the one shared prefix,
+        so installing it is most of the work. On NixOS the package alone gives you only the client
+        binaries (`keyd monitor`, `keyd reload`) — the daemon, the `keyd` group and `/etc/keyd`
+        all come from `services.keyd.enable`, which the NixOS backend wires for you when this role
+        is filled, exactly as it already does for `services.gvfs.enable` behind `fileManager`.
+      '';
+    };
+
     screenshots = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -307,6 +337,7 @@ in
       launcher
       terminal
       osd
+      input
       screenshots
       xwayland
       clipboardHistory

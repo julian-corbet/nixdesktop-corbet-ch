@@ -117,6 +117,19 @@ in
     # backends legitimately differ on this one.
     services.tumbler.enable = lib.mkIf (fileManager == "thunar") true;
 
+    # THE SAME GAP AS `portals`/`services.gvfs` ABOVE, one role over. `lib/nixos-roles.nix`'s
+    # `inputRemappers` table puts `pkgs.keyd` into the package list for its client binaries, and
+    # that is deliberately only half the answer: the daemon, the `keyd` group and `/etc/keyd`
+    # itself all come from this option and nothing else — nixpkgs' `services.keyd` does not even
+    # add the package to `environment.systemPackages`, so neither half is redundant with the other.
+    # Installing the package alone would be the exact `pkgs.gvfs`-without-`services.gvfs.enable`
+    # trap: a remapping daemon that is present, looks configured and never runs.
+    #
+    # Keyed on the role being filled at all rather than on the implementation name, matching
+    # `services.gvfs.enable` above — `input` is a closed enum with one member today, and a second
+    # remapper would want its own wiring here rather than silently inheriting keyd's.
+    services.keyd.enable = lib.mkIf ((want.input or null) == "keyd") true;
+
     # THE SAME GAP AS `portals`/`programs.thunar` ABOVE, one role over: `roles.theming` (see
     # lib/nixos-roles.nix) puts `qt6Packages.qt6ct` — a Qt platform-theme CONFIGURATOR — into
     # `environment.systemPackages`, and a configurator nothing points at configures nothing. Qt
