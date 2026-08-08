@@ -225,6 +225,16 @@ rec {
     clipboardHistory = [ pkgs.cliphist pkgs.wl-clipboard ];
     idleAndLock = [ pkgs.swayidle pkgs.swaylock ];
 
+    # A graphical duplicate/waste finder. ONE nixpkgs attribute provides the GUI here — its
+    # `meta.mainProgram` is the GUI binary (checked, not assumed), so no variant selection is
+    # needed on this platform. Arch splits the GUI and the headless build into separate package
+    # names, which is why nixarch's table names one explicitly and this one does not.
+    #
+    # The headless build is deliberately NOT added alongside: a terminal-first tool fails this
+    # repo's subject test and belongs to whichever repo owns the terminal. Same discipline as
+    # `fileManagerExtras` below not mirroring Arch's optdepends it does not need.
+    duplicateFinder = [ pkgs.czkawka ];
+
     # The plugins this boolean really exists for are NOT here — they are `thunarPlugins` above,
     # wired through `programs.thunar.plugins`. What IS here is the archive manager the archive
     # plugin dispatches to: with no archiver installed, "Create Archive"/"Extract Here" appear in

@@ -299,6 +299,40 @@ in
       '';
     };
 
+    duplicateFinder = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        A graphical duplicate/waste finder — the tool you point at a directory when a disk is
+        full and you want to know what is redundant rather than merely large. czkawka is the
+        implementation both backends resolve.
+
+        A DESKTOP APPLICATION, DELIBERATELY, AND THE SHAPE IS THE POINT. Everything this class of
+        tool does is destructive on confirmation, and the only thing that makes that safe is a
+        human choosing the scope each time it runs. Run as a locally-launched GUI it can only see
+        what the person at the keyboard hands it. Run as a always-on service with standing access
+        to a whole data set — mounted writable, wakeable by anything that can reach it — the same
+        program becomes a remote deletion capability over files nobody was looking at. Same
+        binary, opposite blast radius. This role exists to declare the first shape.
+
+        Boolean over a single implementation rather than a named choice, matching `browsers`
+        above rather than `fileManager`/`polkitAgent`: there is no second implementation worth
+        offering here, so a `nullOr (enum [...])` would be a choice with one option pretending to
+        be a policy. Off by default, for `browsers`' reason too — nothing else in this profile
+        needs it, and a large application should be asked for rather than inherited.
+
+        THE CLI IS NOT PART OF THIS ROLE. The project also ships a headless variant; a
+        terminal-first tool fails this repo's own subject test and belongs to whichever repo owns
+        the terminal, not here. Both backends resolve the GUI only.
+
+        NOT SYMMETRIC IN PACKAGING, though it is in behaviour. On NixOS one attribute provides
+        the GUI. On Arch the GUI has its own package name, which upstream ships only through the
+        AUR while at least one derivative carries a prebuilt one in its own repository — so the
+        Arch backend routes it through its AUR/repo split rather than naming it flatly. A
+        consumer sees none of that, which is what the backend indirection is for.
+      '';
+    };
+
     extraComponents = lib.mkOption {
       type = lib.types.listOf lib.types.str;
       default = [ ];
@@ -347,6 +381,7 @@ in
       gvfsBackends
       theming
       browsers
+      duplicateFinder
       extraComponents
       ;
   };
