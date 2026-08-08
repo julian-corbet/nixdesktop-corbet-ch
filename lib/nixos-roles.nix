@@ -436,6 +436,14 @@ rec {
       ++ resolve inputRemappers (want.input or null)
       ++ lib.optionals (want.launcher or null != null) [ pkgs.${want.launcher} ]
       ++ lib.optionals (want.terminal or null != null) [ pkgs.${want.terminal} ]
+      # Icon themes: free-form names resolved as top-level nixpkgs attributes, exactly like
+      # `launcher`/`terminal` above and `extraComponents` below, and for the same reason —
+      # nixdesktop names no theme itself, so there is no table to look one up in. An unresolvable
+      # name is a hard eval error here rather than a silent no-op, which is the right outcome:
+      # a distribution-specific asset (a name only one derivative's repository carries) simply does
+      # not exist on this platform, and finding that out at evaluation time is better than shipping
+      # a host whose chosen theme is a missing directory.
+      ++ map (name: pkgs.${name}) (want.iconThemes or [ ])
       ++ lib.concatLists (lib.mapAttrsToList
         (name: pkgs': lib.optionals (want.${name} or false) pkgs')
         capabilities)

@@ -274,6 +274,51 @@ in
 
         Available on both platforms, unlike the two roles above — the asymmetry here is only in the
         package names, which is exactly what a backend is for.
+
+        It installs the TOOLS, not the assets they choose between: an icon set is `iconThemes`
+        below, and this profile names none of either.
+      '';
+    };
+
+    iconThemes = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "papirus-icon-theme" ];
+      description = ''
+        Icon theme packages to install, as backend-resolved names.
+
+        INSTALLING IS NOT SELECTING, and this option deliberately does only the first. Which theme
+        a session actually uses is `gtk-icon-theme-name` (and its Qt and cursor counterparts) —
+        written by `theming`'s configurator, by a home-manager `gtk` block, or by a dotfiles repo,
+        all of which are consumer-owned. What none of them can do is conjure a theme that is not
+        on disk: `theming` above installs the picker and exactly one asset (a GTK3 widget theme,
+        for a reason of its own), so a desktop that turns it on gets a chooser with nothing
+        distinctive to choose. This is the option that puts something in it.
+
+        A LIST, NOT A NAMED CHOICE, unlike `fileManager`/`polkitAgent`/`keyring`. Those roles are
+        genuinely exclusive — one file manager runs. Icon themes are not: they coexist on disk,
+        applications fall through a theme's `Inherits` chain to others, and a host reasonably keeps
+        several installed and selects between them at will. Modelling this as a single value would
+        be claiming a selection this option does not make.
+
+        FREE-FORM NAMES, resolved by the platform backend exactly like `extraComponents`,
+        `launcher` and `terminal` — so portability is the consumer's problem for these, and
+        deliberately so. This profile names no theme itself: an icon set is taste, and it is also
+        the kind of asset a distribution ships under a name nobody else uses.
+
+        A NAME HERE IS A SINGLE ATTRIBUTE, NOT A PATH, and on NixOS that is a real limit rather
+        than a formality. The backend resolves through `pkgs.''${name}`, so only a TOP-LEVEL
+        nixpkgs attribute is expressible: `papirus-icon-theme` is one and resolves, while KDE's
+        Breeze set lives at `kdePackages.breeze-icons` with nothing of that name at the top level,
+        so `breeze-icons` is a hard eval error on this platform even though the package plainly
+        exists. That is the same failure mode as a name only one distribution carries, and it gets
+        the same answer: the error is at evaluation time, and a NixOS consumer who wants a nested
+        set reaches for `environment.systemPackages` directly. Nothing here tries to parse dotted
+        paths — a backend that guessed at attribute paths would be inventing a second, weaker
+        package language beside the one nixpkgs already has.
+
+        Empty by default. A desktop that inherits whatever its distribution installed, or that
+        owns its appearance entirely from home-manager, sets nothing here.
       '';
     };
 
@@ -494,6 +539,7 @@ in
       fileManagerExtras
       gvfsBackends
       theming
+      iconThemes
       syntheticTyping
       inputAutomation
       browsers
