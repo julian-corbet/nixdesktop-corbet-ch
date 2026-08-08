@@ -274,6 +274,74 @@ in
 
         Available on both platforms, unlike the two roles above — the asymmetry here is only in the
         package names, which is exactly what a backend is for.
+
+        It installs the TOOLS, not the assets they choose between: an icon set is `iconThemes`
+        below, and this profile names none of either.
+      '';
+    };
+
+    iconThemes = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "papirus-icon-theme" ];
+      description = ''
+        Icon theme packages to install, as backend-resolved names.
+
+        INSTALLING IS NOT SELECTING, and this option deliberately does only the first. Which theme
+        a session actually uses is `gtk-icon-theme-name` (and its Qt and cursor counterparts) —
+        written by `theming`'s configurator, by a home-manager `gtk` block, or by a dotfiles repo,
+        all of which are consumer-owned. What none of them can do is conjure a theme that is not
+        on disk: `theming` above installs the picker and exactly one asset (a GTK3 widget theme,
+        for a reason of its own), so a desktop that turns it on gets a chooser with nothing
+        distinctive to choose. This is the option that puts something in it.
+
+        A LIST, NOT A NAMED CHOICE, unlike `fileManager`/`polkitAgent`/`keyring`. Those roles are
+        genuinely exclusive — one file manager runs. Icon themes are not: they coexist on disk,
+        applications fall through a theme's `Inherits` chain to others, and a host reasonably keeps
+        several installed and selects between them at will. Modelling this as a single value would
+        be claiming a selection this option does not make.
+
+        FREE-FORM NAMES, resolved by the platform backend exactly like `extraComponents`,
+        `launcher` and `terminal` — so portability is the consumer's problem for these, and
+        deliberately so. This profile names no theme itself: an icon set is taste, and it is also
+        the kind of asset a distribution ships under a name nobody else uses.
+
+        Empty by default. A desktop that inherits whatever its distribution installed, or that
+        owns its appearance entirely from home-manager, sets nothing here.
+      '';
+    };
+
+    syntheticTyping = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      description = ''
+        Install a tool that types into the focused window as if from a keyboard — the Wayland
+        equivalent of `xdotool type`.
+
+        WHAT IT IS FOR: everything that has to put text somewhere it cannot paste. A password
+        manager filling a native login form, an expander turning an abbreviation into a
+        boilerplate block, a script driving an application that has no scripting interface of its
+        own. Pasting is not a substitute — many such targets refuse clipboard input outright, and
+        anything that goes through the clipboard leaves a secret sitting in it afterwards, which
+        is precisely what a password manager is trying not to do.
+
+        NOT THE SAME THING AS `input` ABOVE, and the two are worth keeping straight because both
+        are about keys. That role is a REMAPPING DAEMON below the compositor: it rewrites events
+        at the evdev/uinput layer, before any Wayland client sees them, which is what makes its
+        mappings hold in a TTY and across a compositor restart. This is a compositor CLIENT that
+        synthesizes new events through `virtual-keyboard-v1`, so it exists only inside a running
+        Wayland session and only where the compositor implements that protocol. They are also not
+        alternatives to one another — a host can want both, or either, which is why this is a
+        boolean capability rather than another entry in that role's enum.
+
+        A COMPOSITOR PERMISSION QUESTION, WHICH THIS ROLE DOES NOT ANSWER. `virtual-keyboard-v1`
+        lets any client that can reach it inject keystrokes into any other; some compositors gate
+        that, some do not. Installing the tool is the whole of what this option does — whether the
+        session's compositor exposes the protocol, and to whom, belongs to that compositor's own
+        configuration.
+
+        Off by default: nothing else in this profile needs it, and a desktop that never automates
+        input should not carry a keystroke injector.
       '';
     };
 
@@ -417,6 +485,8 @@ in
       fileManagerExtras
       gvfsBackends
       theming
+      iconThemes
+      syntheticTyping
       browsers
       appIndicators
       duplicateFinder

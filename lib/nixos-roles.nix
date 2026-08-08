@@ -330,6 +330,19 @@ rec {
     # for its own reason; `lib.unique` in `packagesFor` makes choosing both free.
     theming = [ pkgs.nwg-look pkgs.adw-gtk3 pkgs.qt6Packages.qt6ct ];
 
+    # Synthetic typing: `wtype`, the Wayland counterpart of `xdotool type`. ONE package, the same
+    # word on both platforms — forced to a real derivation (`.drvPath`), not waved through by
+    # `hasAttrByPath`, which a throwing alias would also pass.
+    #
+    # Deliberately NOT `ydotool`, the other candidate, and the difference is a NixOS fact rather
+    # than a preference: ydotool injects at the uinput layer and therefore needs a privileged
+    # daemon plus a device permission story — `programs.ydotool.enable` exists precisely because a
+    # package alone does not give you a working one. wtype needs none of that. It is an ordinary
+    # unprivileged Wayland client speaking `virtual-keyboard-v1`, so the package IS the whole
+    # mechanism here exactly as it is on Arch, which is what keeps this capability symmetric across
+    # both backends instead of being a package on one platform and an option on the other.
+    syntheticTyping = [ pkgs.wtype ];
+
     # Both top-level nixpkgs attributes, no throwing alias behind either name (unlike qt6ct just
     # above) — confirmed by forcing `.drvPath` on both, not merely checking `hasAttrByPath`, since
     # a throwing alias still passes that check. `chromium` here is the real open-source browser
@@ -396,6 +409,14 @@ rec {
       ++ resolve inputRemappers (want.input or null)
       ++ lib.optionals (want.launcher or null != null) [ pkgs.${want.launcher} ]
       ++ lib.optionals (want.terminal or null != null) [ pkgs.${want.terminal} ]
+      # Icon themes: free-form names resolved as top-level nixpkgs attributes, exactly like
+      # `launcher`/`terminal` above and `extraComponents` below, and for the same reason —
+      # nixdesktop names no theme itself, so there is no table to look one up in. An unresolvable
+      # name is a hard eval error here rather than a silent no-op, which is the right outcome:
+      # a distribution-specific asset (a name only one derivative's repository carries) simply does
+      # not exist on this platform, and finding that out at evaluation time is better than shipping
+      # a host whose chosen theme is a missing directory.
+      ++ map (name: pkgs.${name}) (want.iconThemes or [ ])
       ++ lib.concatLists (lib.mapAttrsToList
         (name: pkgs': lib.optionals (want.${name} or false) pkgs')
         capabilities)
