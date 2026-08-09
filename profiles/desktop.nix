@@ -54,21 +54,36 @@ in
     };
 
     bar = lib.mkOption {
-      type = lib.types.nullOr (lib.types.enum [ "waybar" "eww" "noctalia" ]);
+      type = lib.types.nullOr (lib.types.enum [ "waybar" "ironbar" "eww" "noctalia" ]);
       default = "waybar";
       description = ''
-        Status bar, or null for none. `waybar` is GTK3/Cairo (CPU-only, has a real SNI tray).
-        `eww` is GTK3 too but ships no bar — you build one from primitives. `noctalia` is a full
+        Status bar, or null for none.
+
+        `waybar` is GTK3/Cairo (CPU-only, has a real SNI tray). `ironbar` is the GTK4 one, and the
+        difference that decides between them is FRACTIONAL SCALING: GTK3 has never implemented
+        `wp_fractional_scale_v1`, so on a 1.5-scale output waybar renders at 2x and is downsampled
+        to 0.75, while ironbar negotiates the real scale. It is not automatically the more
+        expensive choice either — its default GSK renderer wants GPU memory, but with
+        `GSK_RENDERER=cairo` it has been measured using less RSS than waybar and no VRAM at all.
+        `eww` is GTK3 too and ships no bar — you build one from primitives. `noctalia` is a full
         QML shell: far more capable, and measurably more expensive in VRAM.
       '';
     };
 
     notifications = lib.mkOption {
-      type = lib.types.nullOr (lib.types.enum [ "mako" ]);
+      type = lib.types.nullOr (lib.types.enum [ "mako" "swaync" ]);
       default = "mako";
       description = ''
         Notification daemon, or null when something else owns
-        `org.freedesktop.Notifications` (a full shell like noctalia does). Deliberately
+        `org.freedesktop.Notifications` (a full shell like noctalia does).
+
+        `mako` is a notification daemon and nothing else: it shows a popup and forgets it.
+        `swaync` adds a persistent history and a control centre, and — the part that usually
+        decides it — publishes `org.erikreider.swaync.cc`, the only notification interface a
+        status bar can read an unread count from. mako, dunst and fnott expose no equivalent, so
+        with any of them a bar simply cannot show a notification badge.
+
+        Deliberately
         independent of `bar`: the two are unrelated jobs, and a daemon left installed can still
         win the D-Bus race via its own service-activation file even if it is never spawned — so
         to hand notifications to another component this must actually be null, not merely

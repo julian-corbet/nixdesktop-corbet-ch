@@ -173,6 +173,7 @@ rec {
 
   bars = {
     waybar = [ pkgs.waybar ];
+    ironbar = [ pkgs.ironbar ];
     eww = [ pkgs.eww ];
     # noctalia is installed from its own flake through home-manager, not from nixpkgs — nixpkgs
     # carries no package for it at all. Empty on purpose, not an oversight; see flake.nix's own
@@ -180,7 +181,13 @@ rec {
     noctalia = [ ];
   };
 
-  notificationDaemons.mako = [ pkgs.mako ];
+  notificationDaemons = {
+    mako = [ pkgs.mako ];
+    # The attribute is NOT `swaync` in nixpkgs -- it is `swaynotificationcenter`, while the binary,
+    # the config directory and the Arch package are all `swaync`. Exactly the sort of per-platform
+    # name mismatch this table exists to absorb.
+    swaync = [ pkgs.swaynotificationcenter ];
+  };
 
   osds.swayosd = [ pkgs.swayosd ];
 
