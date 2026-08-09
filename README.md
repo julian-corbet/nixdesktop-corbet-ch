@@ -93,8 +93,10 @@ that works with exactly one compositor.
 | `desktop` | system-manager / NixOS | the role policy, including `compositor`; publishes `nixdesktop.want` |
 | `backend` | NixOS | resolves `nixdesktop.want` into `environment.systemPackages`, plus the real NixOS options a role needs to actually work (`xdg.portal`, `services.gvfs`, `programs.thunar`, `services.tumbler`, `services.keyd`); nixarch ships the Arch/CachyOS one |
 | `homeManagerModules.session` | home-manager | turns bar/notifier/osd/patchbay/idle/polkit/keyring into systemd user services |
-| `homeManagerModules.waybar` | home-manager | bar config + style |
+| `homeManagerModules.waybar` | home-manager | bar config + style (GTK3) |
 | `homeManagerModules.mako` | home-manager | notification daemon config |
+| `homeManagerModules.ironbar` | home-manager | bar config + style + helper scripts (GTK4 — renders at a fractional output's real scale, where GTK3 is downsampled from the next integer one) |
+| `homeManagerModules.swaync` | home-manager | notification daemon + control-centre config and style; the only one of the four that publishes an unread count a bar can read |
 | `homeManagerModules.swaylock` | home-manager | lock screen appearance |
 | `homeManagerModules.nwgBar` | home-manager | power menu |
 | `homeManagerModules.eww` | home-manager | widget toolkit scaffolding |

@@ -265,6 +265,16 @@
 
         waybar = ./home/waybar.nix;
         mako = ./home/mako.nix;
+
+        # The GTK4 halves of the same two roles, and the reason each exists is written in its own
+        # header: `ironbar` renders at a fractional output's REAL scale where waybar (GTK3, no
+        # `wp_fractional_scale_v1`) is downsampled from the next integer one, and `swaync` is the
+        # only notification daemon of the four that publishes a D-Bus interface a bar can read an
+        # unread count from. Both pairs stay side by side, all four `enable`-gated: on an
+        # integer-scaled output with no bar badge, the cheaper wlroots-native half is still right.
+        ironbar = ./home/ironbar.nix;
+        swaync = ./home/swaync.nix;
+
         swaylock = ./home/swaylock.nix;
         nwgBar = ./home/nwg-bar.nix;
         eww = ./home/eww.nix;
@@ -341,6 +351,12 @@
           # consuming program rejects.
           foot-config = import ./checks/foot-config.nix { inherit pkgs; };
           thunar-actions = import ./checks/thunar-actions.nix { inherit pkgs; };
+          # home/ironbar.nix + home/swaync.nix, and the `unsetEnvironment` plumbing they need from
+          # home/session.nix. Not a serialiser test -- see the check's own header for what is worth
+          # proving in a file generator and what is only re-proving nixpkgs. The short version: the
+          # executable bit on a helper script is invisible from the config file and fails as an
+          # empty label with nothing logged.
+          gtk4-shell = import ./checks/gtk4-shell.nix { inherit pkgs; };
           # The one check in this directory aimed at a BACKEND rather than a home-manager module,
           # and the only one that has to be a real `nixosSystem`: everything it proves is produced
           # by nixpkgs' own `programs/thunar.nix` and `services/desktops/gvfs.nix` downstream of

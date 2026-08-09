@@ -382,6 +382,9 @@ let
       Restart = svc.restart;
       RemainAfterExit = svc.remainAfterExit;
       Environment = lib.mapAttrsToList (k: v: "${k}=${v}") svc.environment;
+      # One name per line; empty list renders no directive, same as `Environment=` above. See the
+      # option's own doc for why an empty-string `Environment=` entry is not a substitute.
+      UnsetEnvironment = svc.unsetEnvironment;
       # One `LoadCredentialEncrypted=ID:PATH` line per attr, same "always present, empty list
       # renders no directive" treatment as `Environment=` immediately above -- see
       # `loadCredentialEncrypted`'s own option doc for the mechanism this populates, and the
@@ -403,31 +406,45 @@ let
   };
 
   # The convenience blocks below only ever set the fields they have an actual opinion about;
-  # everything else falls through to the generic submodule's own defaults. `lib.mkDefault` on each
-  # so that a consumer who also reaches into `nixdesktop.session.services.bar.*` directly (the
-  # same generic mechanism these compile down to) overrides cleanly instead of hitting a
-  # "conflicting definition" error.
+  # everything else falls through to the generic submodule's own defaults. Each is wrapped in
+  # `defaults` so that a consumer who also reaches into `nixdesktop.session.services.bar.*`
+  # directly (the same generic mechanism these compile down to) overrides cleanly instead of
+  # hitting a "conflicting definition" error.
+  #
+  # PER FIELD, NOT PER BLOCK, AND THAT DISTINCTION IS THE WHOLE POINT. These blocks used to be
+  # written `bar = lib.mkDefault { command = ...; description = ...; }`, which does NOT do what it
+  # reads like. `services` is `attrsOf (submodule ...)`, so `services.bar` is one option and
+  # `mkDefault` there prices the WHOLE definition at priority 1000. A consumer definition of
+  # `services.bar.environment` arrives at the default priority of 100, wins the option outright,
+  # and the priced-out definition is DISCARDED rather than merged — taking `command` with it. The
+  # failure is `The option 'nixdesktop.session.services.bar.command' was accessed but has no value
+  # defined`, from a consumer who set something else entirely and never touched `command`.
+  #
+  # Pricing each FIELD instead leaves one definition per leaf option, so the submodule merges the
+  # two definitions field-wise the way the comment above always claimed it did.
+  defaults = lib.mapAttrs (_: lib.mkDefault);
+
   wellKnownServices =
     (lib.optionalAttrs cfg.bar.enable {
-      bar = lib.mkDefault {
+      bar = defaults {
         inherit (cfg.bar) command;
         description = "Status bar";
       };
     })
     // (lib.optionalAttrs cfg.notifications.enable {
-      notifications = lib.mkDefault {
+      notifications = defaults {
         inherit (cfg.notifications) command;
         description = "Notification daemon";
       };
     })
     // (lib.optionalAttrs cfg.osd.enable {
-      osd = lib.mkDefault {
+      osd = defaults {
         inherit (cfg.osd) command;
         description = "On-screen-display server";
       };
     })
     // (lib.optionalAttrs cfg.patchbay.enable {
-      patchbay = lib.mkDefault {
+      patchbay = defaults {
         inherit (cfg.patchbay) command;
         description = "PipeWire patchbay, minimized to the tray (one click away, never fully gone -- see the option group's own header comment)";
         # OPPOSITE of `keyring`/`lock-at-start`'s `restart = "no"`, deliberately -- see the
@@ -445,7 +462,7 @@ let
       # See this option's own header comment, immediately above its declaration, for the full
       # mechanism -- this is exactly the `services.<name>` generic escape hatch every other
       # convenience block here compiles down to, never a different code path.
-      niri = lib.mkDefault {
+      niri = defaults {
         command = ''systemd-notify --ready && while [ -S "$NIRI_SOCKET" ]; do sleep 2; done'';
         runShell = true;
         description = "Seated-session readiness bridge for niri.service (the real compositor runs as a system unit -- see this option's own header)";
@@ -467,11 +484,11 @@ let
       # status`/the journal tell you which mime class actually broke instead of a single combined
       # unit where you'd have to guess. Neither command has a pipe or needs argument grouping, so
       # both run as plain argv (runShell defaults to false) rather than through a needless shell.
-      "cliphist-text" = lib.mkDefault {
+      "cliphist-text" = defaults {
         command = cfg.clipboardHistory.textCommand;
         description = "Clipboard history watcher (text)";
       };
-      "cliphist-image" = lib.mkDefault {
+      "cliphist-image" = defaults {
         command = cfg.clipboardHistory.imageCommand;
         description = "Clipboard history watcher (image)";
       };
@@ -481,7 +498,7 @@ let
     # here rather than asserting keeps "enable the session layer, but this host never idle-locks" a
     # valid configuration instead of a build failure.
     // (lib.optionalAttrs (cfg.idleAndLock.enable && effectiveIdleCommand != null) {
-      idle = lib.mkDefault {
+      idle = defaults {
         command = effectiveIdleCommand;
         runShell = true;
         description = "Idle/lock daemon";
@@ -499,7 +516,7 @@ let
     # here): this is a one-shot gate, and a locker that exits because the human unlocked it has
     # SUCCEEDED, not failed. Restarting it would re-lock the session the instant they got in.
     // (lib.optionalAttrs (cfg.idleAndLock.enable && cfg.idleAndLock.lockAtStart) {
-      "lock-at-start" = lib.mkDefault {
+      "lock-at-start" = defaults {
         command = "${lockBin} -f";
         description = "Lock the session at start (the one password this desk asks for)";
         serviceType = "forking";
@@ -527,7 +544,7 @@ let
       };
     })
     // (lib.optionalAttrs cfg.polkitAgent.enable {
-      "polkit-agent" = lib.mkDefault {
+      "polkit-agent" = defaults {
         inherit (cfg.polkitAgent) command;
         description = "Polkit authentication agent";
       };
@@ -569,7 +586,7 @@ let
       (cfg.keyring.enable && cfg.keyring.oo7.enable && cfg.keyring.oo7.credential.enable
         && cfg.keyring.oo7.credential.bootstrap.enable)
       {
-        "oo7-keyring-bootstrap" = lib.mkDefault {
+        "oo7-keyring-bootstrap" = defaults {
           command = oo7BootstrapCommand;
           runShell = true;
           description = "Create the oo7 login keyring FILE, once, so oo7-daemon's credential-based unlock has something to unlock (idempotent, non-destructive)";
@@ -822,6 +839,30 @@ in
             default = { };
             example = { NO_AT_BRIDGE = "1"; };
             description = "Extra environment variables for the executed process.";
+          };
+
+          unsetEnvironment = lib.mkOption {
+            type = lib.types.listOf lib.types.str;
+            default = [ ];
+            example = [ "SCROLLSOCK" "I3SOCK" ];
+            description = ''
+              systemd's `UnsetEnvironment=`: variables REMOVED from the environment this unit
+              inherits, applied after everything else. Empty list renders no directive, same
+              convention as the other list fields here.
+
+              Not the same thing as `environment` with an empty value, and the difference is what
+              this option is for. A variable set to "" is still SET, so any consumer that tests for
+              presence rather than contents still finds it — which is exactly how a client library
+              that probes several socket variables in priority order behaves. Only unsetting it
+              makes the probe fall through to the next candidate.
+
+              THE CASE THIS EXISTS FOR, so it is not rediscovered: pointing a sway-IPC client at a
+              compatibility shim by setting `SWAYSOCK` alone does nothing if the compositor also
+              exports its own variable (scroll exports `SCROLLSOCK`), because the client prefers
+              the compositor-specific one and connects straight past the shim. Nothing fails, no
+              error appears anywhere — the client simply talks to the compositor directly and
+              behaves as though the shim were not installed.
+            '';
           };
 
           loadCredentialEncrypted = lib.mkOption {
