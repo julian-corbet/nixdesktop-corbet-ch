@@ -166,6 +166,51 @@ in
       '';
     };
 
+    brightness = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum [ "brightnessctl" ]);
+      default = null;
+      description = ''
+        Panel-backlight setter, or null for none — the one-shot command that actually changes the
+        screen brightness. It has no window, no daemon and nothing anyone runs on purpose: it is
+        the BACKEND something else spawns when a brightness key is pressed.
+
+        WHICH IS WHY IT IS A ROLE AND NOT A LINE IN SOMEBODY'S PACKAGE LIST. Both of the things
+        that press that key spawn it BY BARE NAME and ship nothing themselves: `osd` above shells
+        out to it, and a compositor's stock brightness bind spawns it directly — which is why this
+        repo's own compositor table already has to carry it inside niri's entry. So leaving this
+        unfilled on a machine that HAS a backlight fails in the quiet way this whole profile exists
+        to prevent: the volume keys work, the caps-lock indicator works, and the brightness keys do
+        nothing at all. No error, no log line — a bind fired and the command was not there.
+
+        CONDITIONAL ON HARDWARE, alone among the roles here, which is why it defaults to null
+        rather than to its only implementation. It drives `/sys/class/backlight`, so it is useful
+        only on a machine with an entry there — an internal panel. A tower driving an external
+        monitor has none; that display's brightness is a DDC/CI conversation with the monitor's own
+        firmware, which is a different tool and would be a different role. AND THE DIRECTORY IS NOT
+        THE PROBE, which is the trap worth naming because checking for it is the obvious thing to
+        try: it exists, EMPTY, on machines with no backlight whatsoever — a headless server, a
+        container. Measured rather than assumed: `ls /sys/class/backlight` returns one entry on a
+        laptop and zero entries, out of a directory that is nonetheless present, on a headless
+        server. Only the entries answer the question, nothing in this profile is in a position to
+        look, and so the consumer sets this per host.
+
+        A NAMED CHOICE RATHER THAN A BOOLEAN, unlike `duplicateFinder` below which makes the
+        opposite call for its single implementation — because this class genuinely has members.
+        `light` and `acpilight` reach the same sysfs attribute by other means, and `ddcutil`
+        addresses an external display over DDC/CI. The enum has one entry today because
+        brightnessctl is the name everything else already spawns, not because there is nothing else
+        to name; a second one belongs in this enum rather than in a second option.
+
+        NOT SYMMETRIC ACROSS PLATFORMS, and both backends' tables say so. Writing the backlight
+        attribute is privileged and there are two ways in: a udev rule handing a group access to
+        it, or logind's own `SetBrightness` method, which is granted only to a session ACTIVE ON A
+        SEAT. The package ships that udev rule on either platform; whether anything READS it is the
+        difference. On NixOS nothing does, deliberately — see lib/nixos-roles.nix for why that is
+        settled rather than missing. The seat requirement is the same one `polkitAgent` above
+        already names, and it fails the same silent way when a session has no seat.
+      '';
+    };
+
     input = lib.mkOption {
       type = lib.types.nullOr (lib.types.enum [ "keyd" ]);
       default = null;
@@ -334,6 +379,45 @@ in
 
         Empty by default. A desktop that inherits whatever its distribution installed, or that
         owns its appearance entirely from home-manager, sets nothing here.
+      '';
+    };
+
+    wallpapers = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "cachyos-wallpapers" ];
+      description = ''
+        Wallpaper IMAGE sets to install, as backend-resolved package names. Pictures on disk, and
+        nothing else.
+
+        THE DAEMON IS NOT PART OF THIS ROLE, AND THAT SPLIT IS THE WHOLE POINT OF THE OPTION.
+        Something has to hold a layer-shell surface and paint the image onto each output, and that
+        program is a COMPOSITOR fact rather than a desktop one: scroll, a sway fork, spawns
+        `swaybg` by name through sway's inherited `swaybg_command`, so nixscroll installs swaybg
+        (and azote, the picker that drives it) and this profile must not. Doing it here would put a
+        compositor-specific process into a compositor-neutral profile and hand a second copy of it
+        to the repo that already owns it. The IMAGES have no such coupling in either direction — a
+        JPEG is the same JPEG under every compositor, and under none — which is exactly what makes
+        them a desktop asset and the daemon not one.
+
+        A LIST, AND INSTALLING IS NOT SELECTING: both hold here for `iconThemes`' reasons above,
+        unchanged. Wallpaper sets coexist on disk, a host reasonably keeps several and switches
+        between them, and WHICH image is displayed is written somewhere this profile does not own —
+        the compositor's own config, or whatever picker the consumer runs. All this option
+        guarantees is that there is something on disk to point at.
+
+        FREE-FORM NAMES, RESOLVED BY THE BACKEND, and this is the role where that costs the most,
+        so it is better stated than discovered: wallpaper packages are named after the distribution
+        that ships them. `cachyos-wallpapers` is an ordinary package on Arch/CachyOS and is not a
+        nixpkgs attribute at all, so the same value that installs images through one backend is a
+        hard evaluation error through the other — the identical trap `iconThemes` documents for
+        KDE's nested `breeze-icons`, and it gets the identical answer: fail at evaluation rather
+        than silently install nothing. nixpkgs' own sets carry other distributions' names too
+        (`cosmic-wallpapers`, `system76-wallpapers`), which is the deeper reason this profile names
+        none of them itself.
+
+        Empty by default. A desktop that is happy with whatever its compositor paints, or that
+        keeps its images in a dotfiles repo rather than a package, sets nothing here.
       '';
     };
 
@@ -545,6 +629,7 @@ in
       launcher
       terminal
       osd
+      brightness
       input
       screenshots
       xwayland
@@ -555,6 +640,7 @@ in
       gvfsBackends
       theming
       iconThemes
+      wallpapers
       syntheticTyping
       inputAutomation
       browsers

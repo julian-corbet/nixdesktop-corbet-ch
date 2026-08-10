@@ -1,15 +1,23 @@
-# The three roles this profile added that produce nothing but PACKAGES — `syntheticTyping`,
-# `iconThemes` and `inputAutomation` — proven against the real NixOS backend, in both directions.
+# The five roles this profile fills with PACKAGES AND NOTHING ELSE — `syntheticTyping`,
+# `iconThemes`, `inputAutomation`, `brightness` and `wallpapers` — proven against the real NixOS
+# backend, in both directions.
 #
 # WHY THEY SHARE A FILE. checks/file-manager.nix and checks/input-substrate.nix each exist because
 # their role's package is only half the mechanism on NixOS: the other half is a nixpkgs option
 # (`programs.thunar.enable`, `services.keyd.enable`) that the package alone does not imply, and
-# forgetting it produces the silent failure those files are built to catch. None of these three is
-# like that. `wtype` is an unprivileged Wayland client and an icon theme is a directory of files;
-# on both platforms the package IS the whole mechanism, and there is no option half to forget. What
-# is worth proving about them is therefore the same single question — does the role reach
-# `environment.systemPackages`, and does the unfilled role reach nothing — so they are tested
-# together rather than in three files that would differ only in a string.
+# forgetting it produces the silent failure those files are built to catch. None of these five is
+# like that. `wtype` is an unprivileged Wayland client, an icon theme and a wallpaper set are
+# directories of files; on both platforms the package IS the whole mechanism, and there is no
+# option half to forget. What is worth proving about them is therefore the same single question —
+# does the role reach `environment.systemPackages`, and does the unfilled role reach nothing — so
+# they are tested together rather than in five files that would differ only in a string.
+#
+# `brightness` LOOKS LIKE THE EXCEPTION AND IS NOT, which is exactly why it is proven here rather
+# than in a file of its own. A reader who knows keyd's story goes looking for the option half, and
+# on NixOS there used to be one: `hardware.brightnessctl` installed the package's udev rules. It was
+# REMOVED, because the tool now takes logind's `SetBrightness` route and needs no rules — so the
+# missing option is a settled decision rather than an oversight, and the package is once again the
+# whole mechanism. See lib/nixos-roles.nix's own entry for the full account.
 #
 # `inputAutomation` IS THE NEAR MISS, and it is here rather than beside the input substrate for a
 # precise reason. Its package is genuinely a partial answer on NixOS — `programs.ydotool.enable`
@@ -47,13 +55,31 @@ let
   }).config;
 
   # `compositor` has no default and is mandatory the moment the profile is enabled. Which one is
-  # irrelevant to both roles under test.
-  desktop = extra: { nixdesktop.desktop = { enable = true; compositor = "niri"; } // extra; };
+  # irrelevant to every role here except `brightness` — see `plainDesktop` below.
+  desktopOn = compositor: extra:
+    { nixdesktop.desktop = { enable = true; inherit compositor; } // extra; };
+  desktop = desktopOn "niri";
+
+  # THE ONE FIXTURE THAT CANNOT BE ON niri, and the reason is the fact the brightness role is most
+  # likely to be misread as: niri's entry in lib/nixos-roles.nix's `compositors` table carries
+  # brightnessctl of its own, because niri's stock binds spawn it by name. On that compositor the
+  # setter is therefore present whether or not the role is filled, so a niri fixture can prove
+  # neither direction. `sway` resolves through the same table's plain fallthrough — one package,
+  # nothing bundled (its nixpkgs wrapper adds no brightness tool either; checked, not assumed) —
+  # which is what makes both directions visible at all.
+  plainDesktop = desktopOn "sway";
 
   typing = configFor (desktop { syntheticTyping = true; });
   automating = configFor (desktop { inputAutomation = true; });
   themed = configFor (desktop { iconThemes = [ "papirus-icon-theme" ]; });
+  # cosmic-wallpapers is a real top-level nixpkgs attribute and an image set and nothing else — the
+  # positive case has to be a name THIS platform carries, which the one an Arch/CachyOS host really
+  # sets deliberately is not (see the negative case below).
+  wallpapered = configFor (desktop { wallpapers = [ "cosmic-wallpapers" ]; });
+  brightened = configFor (plainDesktop { brightness = "brightnessctl"; });
+  osdOnly = configFor (plainDesktop { osd = "swayosd"; });
   unfilled = configFor (desktop { });
+  plainUnfilled = configFor (plainDesktop { });
   disabled = configFor { nixdesktop.desktop = { enable = false; compositor = "niri"; }; };
 
   # `pname`, not `name`: the version suffix is exactly the kind of detail that makes a prefix match
@@ -61,18 +87,24 @@ let
   pnames = cfg: map (p: p.pname or p.name or "") cfg.environment.systemPackages;
   has = n: cfg: lib.elem n (pnames cfg);
 
-  # A theme name that is not a nixpkgs attribute. `iconThemes` resolves through `pkgs.${name}`, so
-  # this must fail the evaluation outright rather than resolve to nothing -- a host whose declared
-  # theme is silently absent gets a session that falls back to hicolor and no error anywhere.
-  themeEval = names: support.evalThrows [
+  # THE ASSET ROLES THAT RESOLVE FREE-FORM NAMES -- `iconThemes` and `wallpapers` -- share one
+  # negative-case harness, because they share the failure. Both go through `pkgs.${name}`, so a name
+  # this platform does not carry must fail the evaluation outright rather than resolve to nothing:
+  # a host whose declared theme is silently absent gets a session that falls back to hicolor with no
+  # error anywhere, and a host whose declared wallpapers are silently absent gets a picker pointed
+  # at an empty directory. `evalThrows` over a stub is enough HERE (unlike every assertion below it)
+  # because what is under test is the throw itself, not what a successful resolution produces.
+  assetEval = settings: support.evalThrows [
     { options.environment.systemPackages = lib.mkOption { type = lib.types.listOf lib.types.anything; default = [ ]; }; }
     ../profiles/desktop.nix
     ../modules/nixos-backend.nix
     {
       nixdesktop.nixosBackend.enable = true;
-      nixdesktop.desktop = { enable = true; compositor = "niri"; iconThemes = names; };
+      nixdesktop.desktop = { enable = true; compositor = "niri"; } // settings;
     }
   ];
+
+  themeEval = names: assetEval { iconThemes = names; };
 
   unresolvableTheme = themeEval [ "definitely-not-a-nixpkgs-attribute" ];
 
@@ -86,6 +118,14 @@ let
   # here. The Arch backend has no such limit: `breeze-icons` is an ordinary pacman name in `extra`,
   # which is precisely the platform asymmetry that makes these names the consumer's problem.
   nestedAttrTheme = themeEval [ "breeze-icons" ];
+
+  # THE SAME THROW FOR THE WALLPAPER SET THE ARCH SIDE OF THIS PROJECT ACTUALLY INSTALLS. Wallpaper
+  # packages are named after the distribution that ships them: `cachyos-wallpapers` is an ordinary
+  # package name through the Arch backend and is no nixpkgs attribute at all, so the identical
+  # policy value has to fail here. Pinned rather than left to chance because it is the concrete
+  # portability limit the option's own documentation promises, and because "installs nothing on
+  # NixOS" would be the tempting, wrong alternative.
+  foreignWallpapers = assetEval { wallpapers = [ "cachyos-wallpapers" ]; };
 
   results = {
     # ── syntheticTyping ───────────────────────────────────────────────────────────────────────
@@ -157,14 +197,67 @@ let
     "...and so does a real package nixpkgs keeps nested, because a name here is never a path" =
       nestedAttrTheme;
 
+    # ── wallpapers ────────────────────────────────────────────────────────────────────────────
+    "wallpapers installs the named image set" =
+      has "cosmic-wallpapers" wallpapered;
+
+    # IMAGES, NOT A DAEMON — the line this role exists to draw, asserted rather than only written
+    # down. Painting an image onto an output takes a layer-shell client (`swaybg` and its kin) that
+    # the COMPOSITOR's own repo owns and spawns by name; installing one here would put a
+    # compositor-specific process into a compositor-neutral profile and fight the copy that repo
+    # already installs.
+    "...and no wallpaper daemon, which belongs to the compositor's own repo" =
+      !(has "swaybg" wallpapered);
+
+    # The empty default is what every existing consumer evaluates, same as `iconThemes` above.
+    "an empty wallpapers list installs no images" =
+      !(has "cosmic-wallpapers" unfilled);
+
+    "a wallpaper set that exists only on another distribution fails the evaluation" =
+      foreignWallpapers;
+
+    # ── brightness ────────────────────────────────────────────────────────────────────────────
+    "brightness = brightnessctl installs the backlight setter" =
+      has "brightnessctl" brightened;
+
+    # THE OVERLAP THAT FORCES THE FIXTURES ABOVE ONTO ANOTHER COMPOSITOR, asserted instead of only
+    # explained: niri's entry in the `compositors` table carries brightnessctl itself, so on niri
+    # the role is invisible in both directions. If that bundle is ever dropped, this fails — and it
+    # should, because the reason those fixtures are on `sway` disappears with it, as does the
+    # working brightness key of every niri host that never filled this role.
+    "...though on a niri host the compositor entry supplies it anyway, role or no role" =
+      has "brightnessctl" unfilled;
+
+    # THE SILENT FAILURE THE ROLE EXISTS FOR: an OSD is not a brightness tool, it spawns one. A
+    # session with swayosd and no brightness role has working volume keys and dead brightness keys
+    # and logs nothing about it. (On NixOS swayosd's own derivation wraps brightnessctl onto ITS OWN
+    # PATH, so the OSD's own adjustment still works — which is exactly why "the bar moved" proves
+    # nothing about the session's PATH, and why this assertion is about the package list.)
+    "an osd on its own installs no brightness setter" =
+      !(has "brightnessctl" osdOnly);
+
+    "an unfilled brightness role installs no setter" =
+      !(has "brightnessctl" plainUnfilled);
+
+    # THE OPTION THIS ROLE MUST NOT GROW, the mirror image of `inputAutomation`'s assertion above.
+    # nixpkgs REMOVED `hardware.brightnessctl` — the module that installed this package's udev
+    # rules — because the logind path needs none, and this backend takes that at its word. An edit
+    # that "completed" the role by feeding the package to `services.udev.packages` would hand a
+    # group write access to every backlight on the machine to fix a problem that is not there.
+    "...and the filled role wires no udev rules, which the logind path does not need" =
+      !(lib.any (p: (p.pname or "") == "brightnessctl") brightened.services.udev.packages);
+
     # ── The profile off entirely ──────────────────────────────────────────────────────────────
     #
-    # `nixdesktop.want` is `{}` here, so `packagesFor` short-circuits before any of the three is
-    # read.
+    # `nixdesktop.want` is `{}` here, so `packagesFor` short-circuits before any of the five is
+    # read — including the compositor, which is what makes brightnessctl absent here despite the
+    # niri bundle two assertions up.
     "a disabled profile installs none of them" =
       !(has "wtype" disabled)
       && !(has "ydotool" disabled)
-      && !(has "papirus-icon-theme" disabled);
+      && !(has "papirus-icon-theme" disabled)
+      && !(has "cosmic-wallpapers" disabled)
+      && !(has "brightnessctl" disabled);
   };
 in
 report "asset-roles" results

@@ -191,6 +191,43 @@ rec {
 
   osds.swayosd = [ pkgs.swayosd ];
 
+  # The panel-backlight setter — see the `brightness` option in profiles/desktop.nix for why the
+  # role exists at all, and why it is the one role in this project gated on hardware.
+  #
+  # THE WHOLE MECHANISM ON THIS PLATFORM, which is worth saying outright because its neighbours in
+  # this file are not: `fileManagers` above, `inputRemappers` below and `portalPackages` further
+  # down are each half an answer that a real NixOS option has to complete. This one is complete,
+  # and nixpkgs settled that deliberately rather than never getting round to it.
+  # `hardware.brightnessctl` USED to exist and was REMOVED, its notice in
+  # `nixos/modules/rename.nix` reading that newer brightnessctl no longer requires the udev rules
+  # because it can use the systemd-logind API, and that the package in
+  # `environment.systemPackages` is now the entire configuration. Read out of that notice, not
+  # inferred from the package building cleanly.
+  #
+  # THE UDEV RULE IS STILL IN THE CLOSURE AND IS STILL NOT READ — the leftover that removal creates,
+  # and the thing a later reader will otherwise try to "fix". `nix build` + `find $out` shows
+  # `lib/udev/rules.d/90-brightnessctl.rules` (the derivation runs the `install_udev_rules` target),
+  # and NixOS reads a package's rules only when something names that package in
+  # `services.udev.packages` — nothing here does, and nothing should: the derivation builds with
+  # `ENABLE_SYSTEMD=1`, so the privileged write goes through logind's `SetBrightness`, which logind
+  # grants to a session ACTIVE ON A SEAT and to nothing else. Wiring the rules back would hand a
+  # group write access to every backlight on the machine to solve a problem that is not there.
+  #
+  # ALREADY INSTALLED ON A niri HOST THAT NEVER FILLED THIS ROLE, which is the fact that makes this
+  # entry worth reading rather than assuming. The `compositors` table below carries brightnessctl
+  # inside niri's own entry, because niri's stock binds spawn it by name — so there, filling the
+  # role adds nothing (`lib.unique` in `packagesFor` makes the overlap free) and leaving it unfilled
+  # costs nothing either. Every other compositor resolves through that table's plain fallthrough
+  # with no such bundle, and that is where this role is the difference between working brightness
+  # keys and dead ones. checks/asset-roles.nix pins both halves so neither can drift silently.
+  #
+  # AND `osds` IS NOT A SUBSTITUTE HERE, though on this platform it looks like one. swayosd's own
+  # derivation wraps brightnessctl onto ITS PATH (`preFixup`, via `gappsWrapperArgs`), so an OSD
+  # keeps adjusting brightness with this role unfilled while the compositor's own bare-name bind
+  # still finds nothing on the session's PATH. "The OSD moved the bar" is therefore not evidence
+  # that this role is filled — it is evidence about one package's wrapper.
+  brightnessSetters.brightnessctl = [ pkgs.brightnessctl ];
+
   # The input substrate — a keyboard remapping daemon below the compositor. See the `input` option
   # in profiles/desktop.nix for why that layer is a role of its own.
   #
@@ -440,6 +477,7 @@ rec {
       ++ resolve polkitAgents (want.polkitAgent or null)
       ++ resolve keyrings (want.keyring or null)
       ++ resolve osds (want.osd or null)
+      ++ resolve brightnessSetters (want.brightness or null)
       ++ resolve inputRemappers (want.input or null)
       ++ lib.optionals (want.launcher or null != null) [ pkgs.${want.launcher} ]
       ++ lib.optionals (want.terminal or null != null) [ pkgs.${want.terminal} ]
@@ -451,6 +489,15 @@ rec {
       # not exist on this platform, and finding that out at evaluation time is better than shipping
       # a host whose chosen theme is a missing directory.
       ++ map (name: pkgs.${name}) (want.iconThemes or [ ])
+      # Wallpaper image sets: the same free-form-name-through-`pkgs.${name}` resolution as
+      # `iconThemes` just above, for the same reasons — with one difference worth naming here
+      # because it is the case that actually occurs rather than a hypothetical. Wallpaper packages
+      # are named after the distribution that ships them, so the value an Arch/CachyOS host really
+      # sets (`cachyos-wallpapers`, an ordinary package on that platform) is not a nixpkgs attribute
+      # at all and throws here. That is the promised behaviour rather than a gap: a wallpaper set
+      # that does not exist on this platform should stop the evaluation, not leave a host whose
+      # declared images are a missing directory nothing reports on.
+      ++ map (name: pkgs.${name}) (want.wallpapers or [ ])
       ++ lib.concatLists (lib.mapAttrsToList
         (name: pkgs': lib.optionals (want.${name} or false) pkgs')
         capabilities)

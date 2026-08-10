@@ -374,12 +374,13 @@
           # under test is what nixpkgs' own `services/hardware/keyd.nix` does downstream of the one
           # boolean modules/nixos-backend.nix sets. The package alone is not a running daemon.
           input-substrate = import ./checks/input-substrate.nix { inherit pkgs nixpkgs system; };
-          # The three roles this profile fills with a package and nothing else -- synthetic typing,
-          # icon themes and input automation. A real `nixosSystem` again, but for the opposite
-          # reason to the two above: not because an option half could be forgotten, but because
-          # `iconThemes` resolves free-form strings through `pkgs.${name}` and only a real
-          # evaluation forces them -- and, for input automation, because the thing that has to stay
-          # false is one of nixpkgs' OWN options, which no stub could report on.
+          # The five roles this profile fills with a package and nothing else -- synthetic typing,
+          # icon themes, input automation, the backlight setter and wallpaper image sets. A real
+          # `nixosSystem` again, but for the opposite reason to the two above: not because an option
+          # half could be forgotten, but because `iconThemes`/`wallpapers` resolve free-form strings
+          # through `pkgs.${name}` and only a real evaluation forces them -- and, for input
+          # automation and brightness, because the thing that has to stay false or empty is one of
+          # nixpkgs' OWN options, which no stub could report on.
           asset-roles = import ./checks/asset-roles.nix { inherit pkgs nixpkgs system; };
           monitor-identity = import ./checks/monitor-identity.nix { inherit pkgs; };
           layout-geometry = import ./checks/layout-geometry.nix { inherit pkgs; };
