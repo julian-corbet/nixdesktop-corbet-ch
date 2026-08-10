@@ -277,6 +277,13 @@
 
         swaylock = ./home/swaylock.nix;
         nwgBar = ./home/nwg-bar.nix;
+
+        # nwg-dock. Unlike nwgBar it models the COMMAND LINE too, because nwg-dock has no config
+        # file for position, icon size, output, autohide or the launcher button -- every one of
+        # those is an argv flag, so a hand-started dock is one whose configuration exists nowhere
+        # but in its own argv and vanishes with the process. It also carries the icon-replacement
+        # story, including the part it honestly cannot do itself; see the module's own header.
+        nwgDock = ./home/nwg-dock.nix;
         eww = ./home/eww.nix;
 
         # The config for the `terminal` role, never the terminal itself -- see home/foot.nix's own

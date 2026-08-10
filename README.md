@@ -99,6 +99,7 @@ that works with exactly one compositor.
 | `homeManagerModules.swaync` | home-manager | notification daemon + control-centre config and style; the only one of the four that publishes an unread count a bar can read |
 | `homeManagerModules.swaylock` | home-manager | lock screen appearance |
 | `homeManagerModules.nwgBar` | home-manager | power menu |
+| `homeManagerModules.nwgDock` | home-manager | dock: CSS, replacement icons, and the rendered command line (nwg-dock configures most of itself through argv, not a file) |
 | `homeManagerModules.eww` | home-manager | widget toolkit scaffolding |
 | `homeManagerModules.foot` | home-manager | terminal config (font, geometry, scrollback, palette) — the config for the `terminal` role, never the terminal |
 | `homeManagerModules.thunar` | home-manager | Thunar's custom actions (`uca.xml`), the one Thunar surface a config manager may own |
