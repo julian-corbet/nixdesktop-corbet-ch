@@ -698,15 +698,30 @@ let
           # own `keyring` entry, because it is not always the unit that needs waiting for (see
           # `oo7.renderDaemon`'s own doc for the live bug that forced this).
           before = [ "${cfg.keyring.oo7.credential.bootstrap.daemonServiceName}.service" ];
-          # `after`/`wantedBy`/`partOf` all pinned to `daemonServiceName`'s own sibling,
-          # `daemonTarget`, rather than left at the generic per-component default
-          # (graphical-session.target) every OTHER entry in this file safely relies on -- see
-          # `daemonTarget`'s own option doc for exactly why leaving these three at the generic
-          # default stops being correct the moment `daemonServiceName` points outside this
-          # module's own rendering (`oo7.renderDaemon = false`): `before` above only orders two
-          # units that land in the SAME systemd transaction, and pinning all three of these to the
-          # target the REAL daemon unit is actually `WantedBy=` is what guarantees that.
-          after = [ cfg.keyring.oo7.credential.bootstrap.daemonTarget ];
+          # `wantedBy`/`partOf` pinned to `daemonServiceName`'s own sibling, `daemonTarget`, rather
+          # than left at the generic per-component default (graphical-session.target) every OTHER
+          # entry in this file safely relies on -- see `daemonTarget`'s own option doc for exactly
+          # why leaving them at the generic default stops being correct the moment
+          # `daemonServiceName` points outside this module's own rendering
+          # (`oo7.renderDaemon = false`): `before` above only orders two units that land in the
+          # SAME systemd transaction, and pinning these to the target the REAL daemon unit is
+          # actually `WantedBy=` is what guarantees that.
+          #
+          # `after` IS EMPTY, AND THAT IS THE WHOLE POINT -- it used to name `daemonTarget` too,
+          # alongside the `wantedBy` on the same target and the `before` on a daemon that is itself
+          # `WantedBy=` it. Those three together are a CYCLE, because systemd gives every unit an
+          # implicit `Before=` on the target that pulls it in: target -> daemon -> this -> target.
+          # systemd breaks such a loop by silently DELETING one start job, and either outcome here
+          # is a quiet disaster -- lose this unit's job and the daemon starts against a keyring
+          # file that was never repaired (precisely what this bootstrap exists to prevent, failing
+          # invisibly); lose the daemon's and the session has no Secret Service at all. See the
+          # generic assertion in `config.assertions` below, which now names this shape for any
+          # consumer who reconstructs it through `services.<name>` directly.
+          #
+          # Nothing is lost by dropping it. This unit's only real ordering requirement is "before
+          # the daemon", which `before` states outright, and `wantedBy` still decides WHETHER it
+          # runs at all. `basic.target` remains implicit via systemd's own default dependencies.
+          after = [ ];
           wantedBy = [ cfg.keyring.oo7.credential.bootstrap.daemonTarget ];
           partOf = [ cfg.keyring.oo7.credential.bootstrap.daemonTarget ];
           # The identical credential the daemon itself loads (`keyringLoadCredentialEncrypted`,
@@ -716,6 +731,86 @@ let
           loadCredentialEncrypted = keyringLoadCredentialEncrypted;
         };
       });
+  # ── ORDERING CYCLES THROUGH A PULL-IN TARGET ──────────────────────────────────────────────────
+  #
+  # THE SHAPE, which systemd punishes silently. Every unit a target pulls in gets an IMPLICIT
+  # `Before=` on that target -- `systemctl show` reports it even though no unit file says it. So a
+  # component that is `wantedBy` T and also `after` T sits on both sides of T at once. That is
+  # harmless while nothing waits for the component. The moment a SIBLING that T also pulls in is
+  # ordered after it, the loop closes:
+  #
+  #   T  ->  sibling (implicitly before T, waits for the component)
+  #      ->  component (after T)
+  #      ->  T
+  #
+  # WHAT SYSTEMD DOES WITH IT. Not an error, and not a failed unit: it picks one job in the loop
+  # and DELETES it, logging one line against a unit that is not necessarily either of the two a
+  # reader would go looking at.
+  #
+  #   Found ordering cycle: graphical-session.target/verify-active after bar.service/start
+  #     after scroll-ipc-compat.service/start - after graphical-session.target
+  #   Job bar.service/start deleted to break ordering cycle
+  #
+  # The victim then reports `inactive (dead)` with nothing failed and no error of its own -- it
+  # simply is not there after a reboot, which is exactly how this arrived: a status bar that
+  # stopped appearing, with a clean `systemctl --failed`.
+  #
+  # WHY AN ASSERTION AND NOT JUST A DOC NOTE. `after` and `wantedBy` both DEFAULT to
+  # graphical-session.target here, so the dangerous half is what a consumer gets by writing
+  # nothing at all; only the `before` (or a sibling's `after`) is ever typed deliberately, and it
+  # reads entirely reasonable on its own. Nothing about the resulting config looks wrong, and the
+  # failure surfaces one boot later as an absence. This is the check that turns it into a build
+  # error naming both units.
+  #
+  # SCOPE. Only this module's own components, and only ordering they declare about each other --
+  # `after`/`before` naming units from outside (`dbus.socket`, a foreign daemon) cannot be
+  # resolved here and is left alone.
+  cycleServices = lib.filterAttrs (_: svc: svc.enable) cfg.services;
+
+  # `after`/`before` name UNITS ("foo.service"); `services` is keyed by the bare name.
+  cycleUnitOf = name: "${name}.service";
+
+  # Siblings ordered AFTER `name`, however that was expressed: this one's `before`, or theirs
+  # `after`. Both directions describe the same edge and either is enough to close the loop.
+  cycleWaitersOn = name:
+    let svc = cycleServices.${name};
+    in lib.unique (
+      (lib.filter (o: o != name && lib.elem (cycleUnitOf o) svc.before) (lib.attrNames cycleServices))
+      ++ (lib.attrNames (lib.filterAttrs
+        (o: other: o != name && lib.elem (cycleUnitOf name) other.after)
+        cycleServices))
+    );
+
+  # One entry per (target, component, sibling) loop that would actually be built.
+  cycleFindings = lib.flatten (lib.mapAttrsToList
+    (name: svc: lib.flatten (map
+      (target: map
+        (waiter: { inherit name target waiter; })
+        (lib.filter (w: lib.elem target cycleServices.${w}.wantedBy) (cycleWaitersOn name)))
+      # A target is only dangerous when this component is BOTH pulled in by it and ordered after
+      # it -- either alone is the ordinary, correct pattern the whole file is built on.
+      (lib.filter (t: lib.elem t svc.wantedBy) svc.after))
+    )
+    cycleServices);
+
+  cycleMessage = f: ''
+    nixdesktop.session.services.${f.name}: ordering cycle through ${f.target}.
+
+      ${f.target}  ->  ${f.waiter} (pulled in by it, and waits for ${f.name})
+                    ->  ${f.name} (after = [ "${f.target}" ], and pulled in by it too)
+                    ->  ${f.target}
+
+    Every unit a target pulls in is implicitly ordered BEFORE that target, so `${f.name}` being
+    both `wantedBy` and `after` ${f.target} closes the loop as soon as a sibling waits for it.
+    systemd does not fail this -- it deletes one start job to break the cycle and logs a single
+    "Found ordering cycle" line, after which one of these two units is simply absent from the
+    session with nothing marked failed.
+
+    Fix it on `${f.name}`, which is the unit with the contradictory pair: drop `${f.target}` from
+    its `after` (its `wantedBy` still decides whether it runs, and the sibling's own ordering
+    still decides when), or order it after a target OUTSIDE the loop, such as
+    graphical-session-pre.target.
+  '';
 in
 {
   options.nixdesktop.session = {
@@ -1969,8 +2064,13 @@ in
     systemd.user.services =
       lib.mapAttrs toSystemdUnit (lib.filterAttrs (_: svc: svc.enable) cfg.services);
 
-    # ── keyring provider assertions ──────────────────────────────────────────────────────────
-    assertions = [
+    # ── ordering cycles ──────────────────────────────────────────────────────────────────────
+    # One assertion per loop found rather than a single aggregate one, so a config with two of
+    # them names both instead of reporting the first and hiding the rest -- see `cycleFindings`'
+    # own header in the `let` block above for the mechanism and for the live failure that
+    # introduced this.
+    assertions = (map (f: { assertion = false; message = cycleMessage f; }) cycleFindings) ++ [
+      # ── keyring provider assertions ────────────────────────────────────────────────────────
       {
         # Checked unconditionally, independent of `keyring.enable` -- see the keyring assembly's
         # header comment for why this had to become a real, catchable assertion rather than

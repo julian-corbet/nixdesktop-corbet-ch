@@ -357,6 +357,14 @@
           # home/session.nix's ("⚠ THE READINESS GUARANTEE IS CONDITIONAL") for the measured
           # session where systemd's own defaults left a whole desktop permanently dead.
           session-restart-backoff = import ./checks/session-restart-backoff.nix { inherit pkgs; };
+          # The sibling failure mode to session-restart-backoff above, and the more insidious of
+          # the two: a component that is both `wantedBy` and `after` the same target, with a
+          # sibling waiting for it, is an ordering CYCLE -- and systemd answers a cycle by
+          # deleting one start job rather than failing, so the unit is merely absent next boot
+          # with nothing marked failed. `after`/`wantedBy` both default to that target here, so
+          # the dangerous half is what a consumer gets by writing nothing. See the check's own
+          # header, and `cycleFindings` in home/session.nix.
+          session-ordering-cycles = import ./checks/session-ordering-cycles.nix { inherit pkgs; };
           # Same shape again, for the two config-file generators whose output is not the attrset a
           # consumer handed in but a rendered FILE: foot's ini (a palette flattened into indexed
           # keys, booleans in foot's own yes/no spelling, one section name foot has deprecated) and
