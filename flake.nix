@@ -349,6 +349,14 @@
           # deliberately the opposite of keyring/lock-at-start's restart=no), and the
           # StatusNotifierItem-host warning that fires iff `trayHostAvailable = false`.
           patchbay = import ./checks/patchbay.nix { inherit pkgs; };
+          # The only check in this directory whose subject is the RENDERED unit text rather than
+          # the intermediate `nixdesktop.session.services` attrset, and it has to be: the restart
+          # backoff it proves lives half in `[Unit]` and half in `[Service]`, and systemd's
+          # backwards-compatible acceptance of the start-limit pair in the wrong section makes that
+          # mistake invisible everywhere except the emitted file. See its own header, and
+          # home/session.nix's ("⚠ THE READINESS GUARANTEE IS CONDITIONAL") for the measured
+          # session where systemd's own defaults left a whole desktop permanently dead.
+          session-restart-backoff = import ./checks/session-restart-backoff.nix { inherit pkgs; };
           # Same shape again, for the two config-file generators whose output is not the attrset a
           # consumer handed in but a rendered FILE: foot's ini (a palette flattened into indexed
           # keys, booleans in foot's own yes/no spelling, one section name foot has deprecated) and

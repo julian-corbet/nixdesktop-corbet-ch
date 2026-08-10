@@ -38,9 +38,15 @@
 #
 # `Type=notify` means systemd does not consider niri.service (and therefore, via BindsTo+Before,
 # graphical-session.target) reached until niri itself signals readiness -- a real guarantee, not a
-# guess, and the direct fix for the `sleep 1` workaround. `graphical-session.target` is not a
-# niri invention: it is a generic systemd target (`man 7 systemd.special`, confirmed present as a
-# shipped unit) whose documented contract is "active whenever any graphical session is running...
+# guess, and the direct fix for the `sleep 1` workaround. That guarantee is supplied by THAT
+# COMPOSITOR'S OWN UNIT, though; it is never a property of the target. Where the unit pulling the
+# target in is `Type=simple` (or is no service at all), no readiness gate exists anywhere in the
+# chain and the ordering buys nothing -- see "⚠ THE READINESS GUARANTEE IS CONDITIONAL" below for
+# the compositor that is measured on, and for what covers the gap there instead.
+#
+# `graphical-session.target` is not a niri invention: it is a generic systemd target
+# (`man 7 systemd.special`, confirmed present as a shipped unit) whose documented contract is
+# "active whenever any graphical session is running...
 # used to stop user services which only apply to a graphical session when the session is
 # terminated. Such services should have PartOf=graphical-session.target in their [Unit] section."
 # The manual's own worked example is a service started by being WantedBy the session's own target;
@@ -50,14 +56,77 @@
 # maintained `Wants=` list, for exactly this "independently enabled services" case.
 #
 # Every component below is therefore, by default: `PartOf=graphical-session.target` (stop with the
-# session), `After=graphical-session.target` (start only once niri has confirmed it is actually
-# ready, replacing the sleep), `WantedBy=graphical-session.target` (pulled in automatically, no
-# separate enable step). `graphical-session-pre.target` also exists (services that export
+# session), `After=graphical-session.target` (start only once the target is reached -- on niri that
+# means once niri has confirmed it is actually ready, replacing the sleep; on a `Type=simple`
+# compositor it means considerably less, which is what the restart backoff below exists to survive),
+# `WantedBy=graphical-session.target` (pulled in automatically, no separate enable step).
+# `graphical-session-pre.target` also exists (services that export
 # environment into the whole session before it starts, e.g. an SSH/GPG agent, per the same man
 # page) but nothing here uses it: niri's own session script already imports the login manager's
 # environment before starting niri.service, and none of the components below need to inject
 # environment into sibling processes -- they only need to be running and reachable over D-Bus/IPC,
 # which `graphical-session.target` ordering already gives them.
+#
+# ⚠ THE READINESS GUARANTEE IS CONDITIONAL, AND ON SOME HOSTS IT DOES NOT EXIST AT ALL.
+# `After=graphical-session.target` orders a component after the TARGET, and a target is reached the
+# moment the units that pull it in report started -- so the ordering is worth exactly as much as
+# the readiness semantics of whatever unit that is, and not one bit more. On niri it is the
+# `Type=notify` unit quoted above, and the semantics are real. On scroll they are not, and that is
+# measured rather than suspected, twice over:
+#
+#   - The compositor's own unit is `Type=simple`. A seated session runs the compositor as a SYSTEM
+#     unit rendered by nixdesktop.launcher (`PAMName=`/`User=` is the only route to a real seat --
+#     that module's own header), and `mkSeatedUnit` renders `Type=` from
+#     `nixdesktop.launcher.compositors.<name>.supportsNotify`, which is `true` for niri and `false`
+#     for scroll (that option's own doc: measured per compositor, never assumed). `Type=simple`
+#     counts a unit as started the instant its process is FORKED -- long before the compositor has
+#     created, bound, and begun accepting on its Wayland socket.
+#   - Nothing downstream restores the gate either. What pulls `graphical-session.target` in on such
+#     a host is a plain target of the compositor's own (`scroll-session.target`:
+#     `BindsTo=graphical-session.target`, no service, no `ExecStart`, no readiness of any kind), and
+#     a plain target goes active instantly. There is no unit anywhere in that chain that waits for
+#     the socket, so `After=graphical-session.target` resolves the moment the fork happens.
+#
+# WHAT THAT COSTS, MEASURED (the laptop, a seated scroll session, 2026-08-10). The user units
+# started at 12:43:46; `/usr/bin/scroll`, the compositor every one of them connects to, started at
+# 12:43:47 -- a full second LATER. Every component ran against a Wayland socket that did not exist
+# yet and failed. That alone should have been survivable, since retrying is precisely what
+# `Restart=on-failure` is for -- except that this file configured nothing else, and systemd's own
+# unconfigured defaults are `RestartSec=100ms`, `StartLimitBurst=5`, `StartLimitIntervalSec=10s`.
+# Five attempts spaced 100ms apart fit inside HALF A SECOND, so every component spent its entire
+# restart budget inside that one-second window, hit `start-limit-hit`, and stayed dead for the whole
+# session with nothing left that would ever retry it: no bar, no dock, no notification daemon, under
+# a compositor that was by then perfectly healthy. `kanshi.service` is the one the journal caught
+# mid-flight (`restart counter is at 6` -> `Start request repeated too quickly` -> `Failed with
+# result 'start-limit-hit'`), but every component in this file shared its fate for the same reason.
+#
+# THE FIX: RESTART BACKOFF WIDE ENOUGH TO OUTLAST A LATE COMPOSITOR. `restartSec` /
+# `startLimitBurst` / `startLimitIntervalSec` (all three declared on the generic service submodule
+# below) default to 2 s / 10 / 60 s for EVERY component, with no call site opting in -- a racing
+# component is a property of this whole class of unit, not of any one of them, so a default each
+# consumer had to remember to set would be the same bug with an extra step. Ten permitted starts
+# spaced two seconds apart span roughly eighteen seconds of wall clock, so a compositor arriving a
+# second late -- or fifteen -- is simply retried through, and the component comes up. The failure
+# above becomes a handful of journal lines and a working desktop.
+#
+# WHY NOT `StartLimitIntervalSec=0` (RETRY FOREVER), WHICH ALSO FIXES THE RACE. It fixes it by
+# deleting the end-stop, and the end-stop is load-bearing here. A component whose binary is simply
+# MISSING is deliberately not special-cased anywhere in this file -- making that failure visible is
+# the entire reason for moving off spawn-at-startup (see reason 3 at the top, and `restart`'s own
+# option doc) -- and the place it becomes visible is `systemctl --user --failed`. With no start
+# limit there is no such place: a missing binary would exec-fail every two seconds for the rest of
+# the session, never appear in `--failed`, and be diagnosable only from a journal it is
+# simultaneously flooding. That trades spawn-at-startup's silence for spawn-at-startup's noise and
+# recovers none of the diagnostic value the move was made for. A WIDENED window keeps both
+# properties at once: transient lateness is retried through, permanent breakage still parks in
+# `--failed` -- in roughly eighteen seconds instead of half a second. A host that genuinely wants the
+# infinite retry can still have it: `startLimitIntervalSec = 0` is systemd's own spelling for "no
+# rate limiting at all", and that option passes the value straight through.
+#
+# The 60 s window is also not merely a bigger number than systemd's 10 s -- it catches a class the
+# default silently misses. A unit that fails every three seconds never fits five failures into a
+# rolling ten-second window, so stock systemd restart-loops it forever, all session, with no failed
+# state and no end. Ten failures inside sixty seconds is a real thrash signature, and this parks it.
 #
 # ⚠ THE ONE EXCEPTION: A SEATED SESSION NEVER RUNS niri.service AT ALL. nixdesktop.launcher
 # renders a seated compositor as a SYSTEM unit (`PAMName=`/`User=` is the only way to a real
@@ -375,6 +444,19 @@ let
     # `loadCredentialEncrypted`'s own empty-attrset case already gets below.
     // lib.optionalAttrs (svc.conditionPathExists != null) {
       ConditionPathExists = svc.conditionPathExists;
+    }
+    # THE UNIT SECTION, NOT [Service], for both of these -- `man 5 systemd.unit` is where
+    # `StartLimitIntervalSec=`/`StartLimitBurst=` are documented, and systemd still parsing them
+    # under `[Service]` for backwards compatibility is exactly how they end up in the wrong section
+    # by accident. Same "absent means no directive" treatment as `ConditionPathExists` immediately
+    # above: a `null` renders nothing at all and leaves systemd's own defaults (5 starts per 10 s)
+    # in place -- see this file's header for why those defaults kill this entire class of unit
+    # permanently on a compositor with no readiness gate, and each option's own doc for the values.
+    // lib.optionalAttrs (svc.startLimitIntervalSec != null) {
+      StartLimitIntervalSec = svc.startLimitIntervalSec;
+    }
+    // lib.optionalAttrs (svc.startLimitBurst != null) {
+      StartLimitBurst = svc.startLimitBurst;
     };
     Service = {
       Type = svc.serviceType;
@@ -399,6 +481,14 @@ let
     # consumer.
     // lib.optionalAttrs (svc.notifyAccess != null) {
       NotifyAccess = svc.notifyAccess;
+    }
+    # The spacing half of the restart backoff (`StartLimitIntervalSec=`/`StartLimitBurst=`, its
+    # budget half, are `[Unit]` directives and render above). Same absent-means-no-directive rule:
+    # `null` leaves systemd's own 100ms in place. Inert for a component with `Restart=no`, which is
+    # why it is rendered unconditionally rather than gated on `restart` -- systemd ignores it there,
+    # and a gate would only make the rendered unit differ for no behavioural reason.
+    // lib.optionalAttrs (svc.restartSec != null) {
+      RestartSec = svc.restartSec;
     };
     Install = {
       WantedBy = svc.wantedBy;
@@ -691,10 +781,100 @@ in
               A component whose binary is simply missing is deliberately NOT special-cased here:
               this module does not check for the binary's existence before running it, because the
               entire point of moving off spawn-at-startup is to make that failure visible. With
-              "on-failure" and systemd's own default start-limiting (five attempts in ten seconds,
-              not reconfigured here), a missing binary fails loudly a handful of times and then
-              parks in a `systemctl --user --failed`-visible failed state -- instead of the
-              current behaviour, which is nothing, forever, with no diagnostic anywhere.
+              "on-failure" and the backoff configured by `restartSec`/`startLimitBurst`/
+              `startLimitIntervalSec` below, a missing binary fails loudly ten times over roughly
+              eighteen seconds and then parks in a `systemctl --user --failed`-visible failed state
+              -- instead of spawn-at-startup's own behaviour, which is nothing, forever, with no
+              diagnostic anywhere. Those three are what make that sentence true: under systemd's own
+              UNCONFIGURED start-limiting (five attempts in ten seconds, 100ms apart) the identical
+              wording would also be true of a component that merely started a second before its
+              compositor did, which is how a whole desktop's worth of healthy components once ended
+              the session dead -- see this file's header, "⚠ THE READINESS GUARANTEE IS
+              CONDITIONAL".
+            '';
+          };
+
+          restartSec = lib.mkOption {
+            type = lib.types.nullOr lib.types.ints.unsigned;
+            default = 2;
+            example = 5;
+            description = ''
+              systemd's `RestartSec=`, in seconds (a bare number is seconds, systemd's own default
+              unit for this directive). THE SPACING half of this class's restart backoff; the
+              BUDGET half is `startLimitBurst`/`startLimitIntervalSec` below. See this file's
+              header ("⚠ THE READINESS GUARANTEE IS CONDITIONAL") for the measured session this
+              exists to survive.
+
+              systemd's unconfigured default is 100ms, and that value is the whole mechanism behind
+              that failure rather than a detail of it: at 100ms a component exhausts five attempts
+              inside half a second, so a compositor arriving even ONE second late outlives the
+              component's entire restart budget and the component never runs again. Two seconds
+              spreads `startLimitBurst` attempts across roughly eighteen seconds instead, which is
+              what turns "the Wayland socket was not there yet" from permanent death into a few
+              journal lines followed by a working bar.
+
+              Not raised further, because this is also how long a human waits staring at a gap in
+              the desktop when a component really did crash mid-session -- widening the retry BUDGET
+              is `startLimitBurst`'s job, not this option's. Two seconds is also exactly what
+              nixdesktop.launcher already uses for the compositor's own `RestartSec=`, so the whole
+              session retries on one rhythm rather than two. `null` omits the directive entirely and
+              restores systemd's own 100ms -- correct only for a component that genuinely should
+              hot-loop, which nothing in this file is.
+            '';
+          };
+
+          startLimitBurst = lib.mkOption {
+            type = lib.types.nullOr lib.types.ints.unsigned;
+            default = 10;
+            example = 5;
+            description = ''
+              systemd's `StartLimitBurst=` (a `[Unit]` directive -- see `startLimitIntervalSec`
+              below): how many starts are permitted inside one `startLimitIntervalSec` window
+              before systemd refuses to start the unit again and parks it `failed` with
+              `start-limit-hit`.
+
+              Ten, against systemd's own default of five, and the number that matters is not this
+              one but its product with `restartSec`: ten starts two seconds apart span roughly
+              eighteen seconds of wall clock, and that span is the ENTIRE tolerance a component has
+              for a compositor that is not accepting connections yet. Systemd's own defaults give
+              that same tolerance a value of half a second, which is less than the one-second gap
+              actually measured on a seated scroll session (see this file's header).
+
+              Deliberately finite, not `0`/unlimited: this is what still lets a genuinely broken
+              component (a missing binary, an unparseable config) reach a visible resting state in
+              `systemctl --user --failed` rather than exec-failing every two seconds for the rest of
+              the session -- the full argument is in the header, under "WHY NOT
+              `StartLimitIntervalSec=0`". `null` omits the directive and restores systemd's own
+              five.
+            '';
+          };
+
+          startLimitIntervalSec = lib.mkOption {
+            type = lib.types.nullOr lib.types.ints.unsigned;
+            default = 60;
+            example = 0;
+            description = ''
+              systemd's `StartLimitIntervalSec=`, in seconds -- the rolling window `startLimitBurst`
+              counts starts within. Rendered into the unit's `[Unit]` section, where `man 5
+              systemd.unit` documents both directives; systemd also still accepts them under
+              `[Service]` for backwards compatibility, which is exactly how they end up in the wrong
+              section by accident.
+
+              Sixty seconds, against systemd's own ten. Wide enough that `startLimitBurst`
+              attempts spaced `restartSec` apart (about eighteen seconds at the defaults) finish
+              well inside one window -- which is what makes the BURST the thing that ends a
+              hopeless unit, deterministically, rather than a window that happens to expire first
+              and silently hands the unit an unlimited number of further attempts. It also catches a
+              thrash class systemd's own default misses entirely: a unit failing every three seconds
+              never fits five failures into a rolling ten-second window, so stock systemd
+              restart-loops it for the whole session with no failed state and no end, while ten
+              failures inside sixty seconds is a real thrash signature this parks.
+
+              `0` disables start rate limiting altogether (systemd's own spelling for "retry
+              forever") -- available deliberately, and deliberately not the default: see the
+              header's "WHY NOT `StartLimitIntervalSec=0`" for why an unreachable failed state costs
+              this module more than the extra retries buy it. `null` omits the directive and
+              restores systemd's own ten seconds.
             '';
           };
 
@@ -768,10 +948,16 @@ in
             default = [ "graphical-session.target" ];
             description = ''
               Start only once these units are active. Ordering after graphical-session.target
-              specifically means "only once the compositor's own session unit has confirmed
-              startup" (niri.service, on niri -- see the header comment -- binds and precedes the
-              target, and is Type=notify, so the target is not reached until the compositor
-              itself says it is ready) -- this is what replaces a `sleep 1` guess.
+              replaces a `sleep 1` guess with a real dependency edge -- but WHAT that edge
+              guarantees is a property of whichever unit pulls the target in, not of the target.
+              On niri it is a genuine readiness gate (niri.service binds and precedes the target
+              and is `Type=notify`, so the target is not reached until the compositor says it is
+              ready -- see the header comment). On a compositor whose unit is `Type=simple`, such
+              as a seated scroll session, it guarantees only that the compositor process has been
+              FORKED: the Wayland socket may not exist for another second or more, and components
+              ordered here will start and fail against it. The restart backoff
+              (`restartSec`/`startLimitBurst`/`startLimitIntervalSec`, above) is what covers that
+              gap -- ordering alone cannot, since there is no unit left to order against.
             '';
           };
 
