@@ -246,9 +246,14 @@ in
     };
   };
 
-  config = lib.mkIf cfg.enable ({
+  # `mkIf` on the VALUE, never `optionalAttrs` on the shape. Deciding which KEYS this config
+  # attrset has by testing an option value makes the module system evaluate that option before it
+  # can know the shape -- and if any other module reads an option this one publishes (a session
+  # layer reading `command`, say), that closes a cycle and evaluation dies with a bare "infinite
+  # recursion encountered" that names neither option. `mkIf` inside the value is lazy and leaves
+  # the key set fixed.
+  config = lib.mkIf cfg.enable {
     xdg.dataFile = iconFiles;
-  } // lib.optionalAttrs (cfg.style != "") {
-    xdg.configFile."nwg-dock/style.css".text = cfg.style;
-  });
+    xdg.configFile."nwg-dock/style.css" = lib.mkIf (cfg.style != "") { text = cfg.style; };
+  };
 }
