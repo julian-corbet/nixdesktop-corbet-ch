@@ -130,7 +130,33 @@ in
 
   config = lib.mkIf cfg.enable {
     xdg.configFile = {
-      "ironbar/config.toml".source = tomlFormat.generate "ironbar-config.toml" cfg.settings;
+      "ironbar/config.toml" = {
+        source = tomlFormat.generate "ironbar-config.toml" cfg.settings;
+
+        # Tell the RUNNING bar that its config moved under it.
+        #
+        # ironbar reads config.toml once, at startup, and watches only the stylesheet afterwards.
+        # So a switch that changes a module or a button's command writes the new file and changes
+        # nothing visible, and the bar keeps serving the old config until it is next restarted --
+        # which on a desktop is "at the next login", possibly days later. The failure has no error
+        # and no symptom except that the change did not happen, so it reads as a broken config
+        # rather than a stale process, and that is a genuinely expensive hour to lose.
+        #
+        # Guarded three ways, because activation must never fail or hang over a cosmetic reload:
+        #   * `command -v` -- this module renders config for a binary it does not install (there is
+        #     deliberately no `package` option; ironbar comes from the host's own distro), so a host
+        #     may legitimately have the config and not the program.
+        #   * exit code ignored -- with no instance running, `ironbar reload` returns 3 immediately
+        #     rather than blocking on the absent IPC socket. Verified, not assumed: a subcommand
+        #     that waited for a socket would turn every headless switch into a hung activation.
+        #   * no restart fallback -- if the reload does not land, the bar keeps running the old
+        #     config, which is strictly better than a switch that can leave the session with no bar.
+        onChange = ''
+          if command -v ironbar > /dev/null 2>&1; then
+            ironbar reload > /dev/null 2>&1 || true
+          fi
+        '';
+      };
     }
     # An empty stylesheet is not written at all. ironbar falls back to the GTK theme's own
     # rendering when there is no style.css, which is a legitimate configuration; writing an empty
