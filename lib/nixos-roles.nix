@@ -279,15 +279,47 @@ rec {
     # exactly the kind of near-miss an existence check waves through).
     appIndicators = [ pkgs.libappindicator pkgs.libayatana-appindicator ];
 
-    # A graphical duplicate/waste finder. ONE nixpkgs attribute provides the GUI here — its
-    # `meta.mainProgram` is the GUI binary (checked, not assumed), so no variant selection is
-    # needed on this platform. Arch splits the GUI and the headless build into separate package
-    # names, which is why nixarch's table names one explicitly and this one does not.
+    # A graphical duplicate/waste finder — ONE of them, which this role now has to enforce rather
+    # than assume.
     #
-    # The headless build is deliberately NOT added alongside: a terminal-first tool fails this
-    # repo's subject test and belongs to whichever repo owns the terminal. Same discipline as
-    # `fileManagerExtras` below not mirroring Arch's optdepends it does not need.
-    duplicateFinder = [ pkgs.czkawka ];
+    # THE ASSUMPTION THAT WAS WRONG. This used to be a bare `pkgs.czkawka` on the reasoning that
+    # "one nixpkgs attribute provides the GUI here, its meta.mainProgram is the GUI binary". The
+    # mainProgram half is still true; the "the GUI" half is not. Checked against the built package
+    # (czkawka-12.0.0):
+    #
+    #   bin/                 cedinia  czkawka_cli  czkawka_gui  krokiet
+    #   share/applications/  com.github.qarmin.czkawka.desktop
+    #                        io.github.qarmin.krokiet.desktop
+    #
+    # krokiet is a SECOND complete GUI for the same job — the newer Slint rewrite — shipped from
+    # the same derivation. Arch splits these into separate package names, so a host taking the Arch
+    # plane gets one entry and a host taking this plane gets two, and a menu shows the duplicate
+    # finder twice under two names. A role that promises one thing and delivers two is the defect,
+    # and it is this file's to fix rather than a launcher's to filter.
+    #
+    # czkawka_gui is kept over krokiet because `meta.mainProgram` names it: that is the package's
+    # own statement of which binary it primarily is, so it is the choice this repo can make without
+    # inventing a preference of its own.
+    #
+    # symlinkJoin rather than overrideAttrs: appending a postInstall invalidates the derivation and
+    # rebuilds a large Rust package from source to delete three files. `meta` is carried across
+    # explicitly, since symlinkJoin drops it and mainProgram is exactly what the choice above
+    # rests on.
+    #
+    # The headless build is deliberately still present (`czkawka_cli`): a binary on PATH costs
+    # nothing and answers a different question. It is the second MENU ENTRY that was the problem.
+    duplicateFinder = [
+      (pkgs.symlinkJoin {
+        name = "czkawka-${pkgs.czkawka.version}-single-gui";
+        paths = [ pkgs.czkawka ];
+        postBuild = ''
+          rm -f $out/bin/krokiet
+          rm -f $out/share/applications/io.github.qarmin.krokiet.desktop
+          rm -f $out/share/icons/hicolor/scalable/apps/io.github.qarmin.krokiet.svg
+        '';
+        inherit (pkgs.czkawka) meta;
+      })
+    ];
 
     # The plugins this boolean really exists for are NOT here — they are `thunarPlugins` above,
     # wired through `programs.thunar.plugins`. What IS here is the archive manager the archive
