@@ -124,6 +124,26 @@
         "type": "github"
       }
     },
+    "home-manager": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1786656209,
+        "narHash": "sha256-ybGtuwGKTUCefKYsplzvw4xcCqznto0c7BaiQhgILtA=",
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "rev": "c554d3441f725537854e877519f01cbd60680174",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-community",
+        "repo": "home-manager",
+        "type": "github"
+      }
+    },
     "nixhost": {
       "inputs": {
         "nixpkgs": [
@@ -221,6 +241,7 @@
     },
     "root": {
       "inputs": {
+        "home-manager": "home-manager",
         "nixhost": "nixhost",
         "nixpkgs": "nixpkgs",
         "system-manager": "system-manager_2"

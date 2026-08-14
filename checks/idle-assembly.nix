@@ -9,7 +9,7 @@
 # byte-identical under any wlroots compositor and idle timeouts are host policy, not compositor
 # config syntax -- owning it per-compositor would produce one copy per compositor repo. Having
 # taken that responsibility on, this repo owes it a test.
-{ pkgs, lib ? pkgs.lib }:
+{ pkgs, home-manager, lib ? pkgs.lib }:
 let
   stubs = { lib, ... }: {
     options = {
@@ -42,17 +42,21 @@ let
     in
     if services ? idle then services.idle.command else null;
 
+  sessionConfig = settings:
+    (
+      (lib.evalModules {
+        modules = [
+          stubs
+          ../home/session.nix
+          { nixdesktop.session = { enable = true; } // settings; }
+        ];
+        specialArgs = { inherit pkgs; };
+      }).config
+    );
+
   # The whole `services` attrset, for assertions about units OTHER than `idle` -- `lock-at-start`
   # is a separate unit, so `idleUnit` above cannot see it at all.
-  sessionServices = settings:
-    ((lib.evalModules {
-      modules = [
-        stubs
-        ../home/session.nix
-        { nixdesktop.session = { enable = true; } // settings; }
-      ];
-      specialArgs = { inherit pkgs; };
-    }).config).nixdesktop.session.services;
+  sessionServices = settings: (sessionConfig settings).nixdesktop.session.services;
 
   base = { idleAndLock.enable = true; };
   merge = extra: { idleAndLock = base.idleAndLock // extra; };
@@ -68,6 +72,45 @@ let
   atStartNoIdle = sessionServices (merge { lockAtStart = true; lockAfterSeconds = null; });
   noAtStart = sessionServices (merge { });
   atStartOtherLocker = sessionServices (merge { lockAtStart = true; lockCommand = "waylock"; });
+  longLockerName = "swaylock[.*]-effects";
+  nearRegexMatchName = "swaylock.-effects";
+  atStartLongLocker = sessionServices (merge {
+    lockAtStart = true;
+    lockCommand = longLockerName;
+  });
+  renderedAtStart = (sessionConfig (merge { lockAtStart = true; })).systemd.user.services."lock-at-start";
+  realHome = home-manager.lib.homeManagerConfiguration {
+    inherit pkgs;
+    modules = [
+      ../home/session.nix
+      {
+        home.username = "nixdesktop-test";
+        home.homeDirectory = "/home/nixdesktop-test";
+        home.stateVersion = "25.05";
+        nixdesktop.session = {
+          enable = true;
+          idleAndLock = {
+            enable = true;
+            lockAtStart = true;
+          };
+        };
+      }
+    ];
+  };
+  realRenderedAtStart =
+    realHome.config.xdg.configFile."systemd/user/lock-at-start.service".source;
+
+  # systemd keeps a successful oneshot with RemainAfterExit active after its process returns.
+  # Exact sd-switch semantics then map an active changed unit with X-RestartIfChanged=false to
+  # KeepOld. Model the post-unlock activation explicitly so these three load-bearing fields cannot
+  # drift independently while the check still calls the result idempotent.
+  latchRemainsActiveAfterUnlock =
+    renderedAtStart.Service.Type == "oneshot"
+    && renderedAtStart.Service.RemainAfterExit;
+  activationAfterUnlock =
+    if latchRemainsActiveAfterUnlock && renderedAtStart.Unit.X-RestartIfChanged == false
+    then "keep-old"
+    else "start";
 
   has = haystack: needle: haystack != null && lib.hasInfix needle haystack;
 
@@ -118,13 +161,17 @@ let
 
     "lockAtStart creates its own unit" = atStart ? "lock-at-start";
 
-    # -f, because swaylock only daemonizes with it -- and the unit is Type=forking, so without -f
-    # systemd would wait forever for a fork that never comes and the session would never finish
-    # starting.
-    "lockAtStart locks with -f so it daemonizes" =
-      atStart."lock-at-start".command == "swaylock -f";
-    "lockAtStart unit is Type=forking" =
-      atStart."lock-at-start".serviceType == "forking";
+    "lockAtStart uses a session-lifetime oneshot latch" =
+      atStart."lock-at-start".serviceType == "oneshot"
+      && atStart."lock-at-start".remainAfterExit;
+    "lockAtStart renders the session-lifetime latch" =
+      renderedAtStart.Service.Type == "oneshot"
+      && renderedAtStart.Service.RemainAfterExit;
+    "lockAtStart uses a plain absolute store-path wrapper" =
+      !atStart."lock-at-start".runShell
+      && lib.hasPrefix builtins.storeDir atStart."lock-at-start".command;
+    "post-unlock Home Manager activation keeps the active latch" =
+      activationAfterUnlock == "keep-old";
 
     # A locker that exits because the human unlocked it has SUCCEEDED. Restart=always here would
     # re-lock the screen the instant they got in -- an unusable desk, and a plausible default to
@@ -138,21 +185,149 @@ let
       (atStartNoIdle ? "lock-at-start") && !(atStartNoIdle ? idle);
 
     "lockAtStart honours lockCommand" =
-      atStartOtherLocker."lock-at-start".command == "waylock -f";
+      atStartOtherLocker."lock-at-start".command != atStart."lock-at-start".command;
+    "lockAtStart gives long regex-like locker names their own wrapper" =
+      atStartLongLocker."lock-at-start".command != atStart."lock-at-start".command;
   };
 
   failed = lib.attrNames (lib.filterAttrs (_: passed: !passed) results);
 in
-# `pkgs.emptyFile`, not `pkgs.runCommand`: this check decides everything at EVALUATION time and the
-# derivation is a formality, but `nix flake check --all-systems` (which this repo's CI runs, and
-# must) asks for that formality on EVERY declared system. A `runCommand` marker has a
-# system-dependent output path, so the aarch64 one is a real aarch64 build and dies with "platform
-# mismatch" on any x86_64 machine -- a red check about nothing. `emptyFile` is fixed-output: its
-# path comes from the content hash alone and is identical on every system, so Nix substitutes it
-# instead of building it. See checks/support.nix, which does the same for the same reason.
+# The x86_64 check also executes the process-detection condition. Other declared systems keep the
+  # fixed-output marker so `--all-systems` remains evaluable on an x86_64 CI builder.
 if failed == [ ]
-then pkgs.emptyFile
-else throw ''
-  nixdesktop: the idle/lock assembly is wrong. Failing assertions:
-  ${lib.concatMapStringsSep "\n" (f: "  - ${f}") failed}
-''
+then
+  if pkgs.stdenv.hostPlatform.system != "x86_64-linux"
+  then pkgs.emptyFile
+  else
+    pkgs.runCommand "nixdesktop-lock-at-start-idempotence"
+    {
+      nativeBuildInputs = [ pkgs.stdenv.cc pkgs.coreutils ];
+      lockCommand = atStartLongLocker."lock-at-start".command;
+      renderedUnit = realRenderedAtStart;
+      inherit longLockerName nearRegexMatchName;
+    } ''
+      set -eu
+
+      # Validate the real Home Manager serialization, not only this check's intermediate module
+      # attrset. A store-path ExecStart must remain one physical line and parse as a user unit.
+      grep -Fx 'Type=oneshot' "$renderedUnit"
+      grep -Fx 'RemainAfterExit=true' "$renderedUnit"
+      grep -Fx 'X-RestartIfChanged=false' "$renderedUnit"
+      grep -E '^ExecStart=/nix/store/[^[:space:]]+-nixdesktop-lock-at-start$' "$renderedUnit"
+      test "$(grep -c '^ExecStart=' "$renderedUnit")" -eq 1
+      mkdir "$TMPDIR/systemd-home" "$TMPDIR/systemd-runtime"
+      chmod 0700 "$TMPDIR/systemd-runtime"
+      env -i HOME="$TMPDIR/systemd-home" XDG_RUNTIME_DIR="$TMPDIR/systemd-runtime" \
+        SYSTEMD_UNIT_PATH="${pkgs.systemd}/example/systemd/user" \
+        ${lib.getExe' pkgs.systemd "systemd-analyze"} --user verify "$renderedUnit"
+
+      # The private wrapper itself carries every detector dependency as an absolute store path and
+      # compares the full executable basename/display literally before its final locker exec.
+      grep -F '${lib.getExe' pkgs.procps "pgrep"}' "$lockCommand"
+      grep -F '${lib.getExe' pkgs.coreutils "readlink"}' "$lockCommand"
+      grep -F '${lib.getExe' pkgs.coreutils "tr"}' "$lockCommand"
+      grep -F '${lib.getExe pkgs.gnugrep}' "$lockCommand"
+      grep -F 'candidate_exe##*/' "$lockCommand"
+      grep -F 'WAYLAND_DISPLAY=$WAYLAND_DISPLAY' "$lockCommand"
+      grep -F "exec 'swaylock[.*]-effects' -f" "$lockCommand"
+
+      # One real ELF covers both branches: --hold stays alive as the existing locker; -f records
+      # that the wrapper really executed a new locker and returns like a daemonizing parent.
+      $CC -x c -o "$TMPDIR/locker-elf" - <<'EOF'
+      #include <fcntl.h>
+      #include <stdlib.h>
+      #include <string.h>
+      #include <unistd.h>
+      int main(int argc, char **argv) {
+        if (argc == 2 && strcmp(argv[1], "--hold") == 0) {
+          for (;;) pause();
+        }
+        if (argc == 2 && strcmp(argv[1], "-f") == 0) {
+          const char *marker = getenv("SPAWN_MARKER");
+          if (marker == NULL) return 20;
+          int fd = open(marker, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+          if (fd < 0) return 21;
+          close(fd);
+          return 0;
+        }
+        return 22;
+      }
+      EOF
+      cp "$TMPDIR/locker-elf" "$TMPDIR/$longLockerName"
+      cp "$TMPDIR/locker-elf" "$TMPDIR/$nearRegexMatchName"
+
+      holder_pid=""
+      trap 'test -z "$holder_pid" || kill "$holder_pid" 2>/dev/null || true' EXIT
+
+      # With no existing locker, the wrapper must execute the configured -f branch.
+      no_existing_marker="$TMPDIR/no-existing-spawned"
+      PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-a SPAWN_MARKER="$no_existing_marker" \
+        /bin/sh -c "$lockCommand"
+      test -e "$no_existing_marker"
+
+      # A real same-UID, same-display ELF whose basename is longer than comm's 15 bytes must be
+      # detected without starting a duplicate. This is the concrete old-pgrep-x regression.
+      same_display_marker="$TMPDIR/same-display-spawned"
+      WAYLAND_DISPLAY=wayland-a "$TMPDIR/$longLockerName" --hold &
+      holder_pid=$!
+      holder_ready=false
+      for _attempt in $(seq 1 50); do
+        holder_exe="$(${lib.getExe' pkgs.coreutils "readlink"} "/proc/$holder_pid/exe" 2>/dev/null || true)"
+        if [ "''${holder_exe##*/}" = "$longLockerName" ] \
+          && ${lib.getExe' pkgs.coreutils "tr"} '\0' '\n' < "/proc/$holder_pid/environ" 2>/dev/null \
+          | ${lib.getExe pkgs.gnugrep} -Fqx -- 'WAYLAND_DISPLAY=wayland-a'; then
+          holder_ready=true
+          break
+        fi
+        sleep 0.02
+      done
+      test "$holder_ready" = true
+      if ${lib.getExe' pkgs.procps "pgrep"} -u "$(${lib.getExe' pkgs.coreutils "id"} -u)" \
+        -x "$longLockerName" >/dev/null 2>&1; then
+        echo "the regression locker unexpectedly fits pgrep -x" >&2
+        exit 1
+      fi
+      PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-a SPAWN_MARKER="$same_display_marker" \
+        /bin/sh -c "$lockCommand"
+      test ! -e "$same_display_marker"
+      kill -0 "$holder_pid"
+
+      # The same executable under the same UID but on another display is not this session's lock.
+      other_display_marker="$TMPDIR/other-display-spawned"
+      PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-b SPAWN_MARKER="$other_display_marker" \
+        /bin/sh -c "$lockCommand"
+      test -e "$other_display_marker"
+
+      kill "$holder_pid"
+      wait "$holder_pid" 2>/dev/null || true
+      holder_pid=""
+
+      # A near name that the configured `[.*]` would match as a regex is not an exact basename
+      # match. The target must therefore execute instead of being suppressed by the near process.
+      exact_name_marker="$TMPDIR/exact-name-spawned"
+      WAYLAND_DISPLAY=wayland-c "$TMPDIR/$nearRegexMatchName" --hold &
+      holder_pid=$!
+      holder_ready=false
+      for _attempt in $(seq 1 50); do
+        holder_exe="$(${lib.getExe' pkgs.coreutils "readlink"} "/proc/$holder_pid/exe" 2>/dev/null || true)"
+        if [ "''${holder_exe##*/}" = "$nearRegexMatchName" ] \
+          && ${lib.getExe' pkgs.coreutils "tr"} '\0' '\n' < "/proc/$holder_pid/environ" 2>/dev/null \
+          | ${lib.getExe pkgs.gnugrep} -Fqx -- 'WAYLAND_DISPLAY=wayland-c'; then
+          holder_ready=true
+          break
+        fi
+        sleep 0.02
+      done
+      test "$holder_ready" = true
+      PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-c SPAWN_MARKER="$exact_name_marker" \
+        /bin/sh -c "$lockCommand"
+      test -e "$exact_name_marker"
+      kill -0 "$holder_pid"
+
+      touch "$out"
+    ''
+else
+  throw ''
+    nixdesktop: the idle/lock assembly is wrong. Failing assertions:
+    ${lib.concatMapStringsSep "\n" (f: "  - ${f}") failed}
+  ''

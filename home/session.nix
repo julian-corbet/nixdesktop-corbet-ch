@@ -143,10 +143,10 @@
 # `notifications`, `osd`, `cliphist-text`, `cliphist-image`, `idle`, `polkit-agent`, `keyring`,
 # `patchbay`.
 #
-# Nothing here installs anything, same reasoning as every other module in this project: package
-# names and binary paths are platform-specific, so `command` is always a string the consumer (or a
-# platform backend, via profiles/desktop.nix) supplies.
-{ lib, config, ... }:
+# Nothing here installs a desktop component: component commands remain strings supplied by the
+# consumer (or a platform backend). Private glue may close over portable command-line tools from
+# `pkgs` so its runtime dependencies never depend on a foreign user manager's PATH.
+{ lib, config, pkgs, ... }:
 let
   cfg = config.nixdesktop.session;
 
@@ -191,6 +191,40 @@ let
     if cfg.idleAndLock.command != null
     then cfg.idleAndLock.command
     else assembledIdleCommand;
+
+  # A lock-at-start unit is a SESSION gate, not a long-running owner of the locker process. Keep a
+  # systemd oneshot latch active for the graphical session lifetime: the first start either finds
+  # this exact locker already holding this Wayland display, or starts it and waits for `-f` to
+  # daemonize. Both paths return success, and RemainAfterExit keeps later Home Manager activations
+  # from re-locking a session whose human has already unlocked it.
+  #
+  # Enumerate by UID only, then compare the untruncated executable basename as an ordinary quoted
+  # string. `pgrep -x` compares Linux's 15-byte `comm` field and is therefore wrong for valid names
+  # such as `swaylock-effects`; feeding the configured name to pgrep as a regex is also wrong for a
+  # bare executable containing `[`, `.`, or `*`. The environment check prevents another Wayland
+  # display owned by the same user from suppressing this display's gate. Every runtime tool is an
+  # absolute store path, so the wrapper does not depend on a foreign user manager's ambient PATH.
+  lockAtStartScript =
+    let
+      lockerName = lib.escapeShellArg lockBin;
+      id = lib.getExe' pkgs.coreutils "id";
+      pgrep = lib.getExe' pkgs.procps "pgrep";
+      readlink = lib.getExe' pkgs.coreutils "readlink";
+      tr = lib.getExe' pkgs.coreutils "tr";
+      grep = lib.getExe pkgs.gnugrep;
+    in
+    pkgs.writeShellScript "nixdesktop-lock-at-start" ''
+      current_uid="$(${id} -u)"
+      for candidate_pid in $(${pgrep} -u "$current_uid" -f .); do
+        candidate_exe="$(${readlink} "/proc/$candidate_pid/exe" 2>/dev/null || true)"
+        [ "''${candidate_exe##*/}" = ${lockerName} ] || continue
+        if ${tr} '\0' '\n' < "/proc/$candidate_pid/environ" 2>/dev/null \
+          | ${grep} -Fqx -- "WAYLAND_DISPLAY=$WAYLAND_DISPLAY"; then
+          exit 0
+        fi
+      done
+      exec ${lockerName} -f
+    '';
 
   # ── The keyring PROVIDER, assembled HERE ───────────────────────────────────────────────────
   #
@@ -266,7 +300,7 @@ let
   #   binary `CAP_IPC_LOCK` (mlock, so decrypted secrets can never be swapped to disk -- the same
   #   protection gnome-keyring's own daemon gets for free via a plain `mlockall()` call it is
   #   permitted to make as an ordinary unprivileged process using a DIFFERENT mechanism). A
-  #   home-manager module has no `pkgs`, no root, and no route to `security.wrappers` -- there is
+  #   home-manager module has no root and no route to `security.wrappers` -- there is
   #   structurally no way for `nixdesktop.session.keyring.oo7` to reproduce that wrapper from here.
   #   `oo7.command` below therefore points at the real, UNWRAPPED `libexec` path (see that option's
   #   own doc) and runs without `CAP_IPC_LOCK`. Flagged explicitly, not silently accepted as
@@ -341,16 +375,14 @@ let
   # A plain shell one-liner (`command` + `runShell = true`, the existing mechanism above), NOT a
   # `pkgs.writeShellScript` -- unlike this module's own private per-host NixOS-plane sibling's
   # version of this identical mechanism, which can and does reach for `pkgs.writeShellScript`
-  # because that file is not this repo. This module is home-manager-only and, per the file
-  # header ("Nothing here installs anything ... package names and binary paths are
-  # platform-specific"), never wraps a
-  # store-path script around a package this repo has never named -- the same reasoning
+  # because that file is not this repo. This module does not wrap the consumer-supplied oo7
+  # package or invent a second command path for it -- the same reasoning
   # `execStartFor`'s own `runShell` branch already exists to serve for `idle`/`lock-at-start`
   # above, reused here rather than inventing a second code path.
   #
   # `install -d`, bare, PATH-resolved -- deliberately NOT `${pkgs.coreutils}/bin/install`, for the
-  # identical reason `keyring.oo7.command` itself has no default and every one of this module's
-  # other assembled commands (`swayidle`, `pkill`, `gnome-keyring-daemon`) is a bare name too: this
+  # identical reason `keyring.oo7.command` itself has no default and the component commands it
+  # composes with (`swayidle`, `pkill`, `gnome-keyring-daemon`) are consumer-owned bare names: this
   # is a home-manager module, evaluated once and consumed on BOTH the NixOS-with-home-manager and
   # Arch/system-manager-with-home-manager planes this repo serves, and `install`/`cat`/`dirname`
   # are on every such host's own PATH by construction (base coreutils, not a package this repo
@@ -457,6 +489,9 @@ let
     }
     // lib.optionalAttrs (svc.startLimitBurst != null) {
       StartLimitBurst = svc.startLimitBurst;
+    }
+    // lib.optionalAttrs (svc.restartIfChanged != null) {
+      X-RestartIfChanged = svc.restartIfChanged;
     };
     Service = {
       Type = svc.serviceType;
@@ -598,39 +633,22 @@ let
     # idle" is a legitimate configuration (see the option's own doc), and tying this to the idle
     # daemon's existence would silently drop the only gate such a session has.
     #
-    # Type=forking because `swaylock -f` daemonizes: it forks once the screen is actually covered,
-    # which is precisely the event worth ordering on -- systemd treats the unit as started only
-    # then, so anything ordered after this cannot paint to an unlocked screen first. `restart =
-    # "no"` for the same reason the keyring component's gnome-keyring provider sets it (see that
-    # option group's own header -- this is now provider-dependent there, but still universally true
-    # here): this is a one-shot gate, and a locker that exits because the human unlocked it has
-    # SUCCEEDED, not failed. Restarting it would re-lock the session the instant they got in.
+    # Type=oneshot + RemainAfterExit is the session-lifetime latch. The wrapper returns only after
+    # an existing locker was found or `swaylock -f` daemonized, then the unit remains active even
+    # after the human unlocks. PartOf=graphical-session.target clears the latch at session teardown.
     // (lib.optionalAttrs (cfg.idleAndLock.enable && cfg.idleAndLock.lockAtStart) {
       "lock-at-start" = defaults {
-        command = "${lockBin} -f";
+        command = toString lockAtStartScript;
         description = "Lock the session at start (the one password this desk asks for)";
-        serviceType = "forking";
+        serviceType = "oneshot";
+        remainAfterExit = true;
         restart = "no";
-        # `runShell = true`, ADDED -- this is the one wellKnownServices entry that hands `lockBin`
-        # to systemd as its OWN unit's outermost ExecStart. Every other consumer of `lockBin`
-        # (`idle`'s own assembled swayidle invocation, above) only ever hands it to a process
-        # SWAYIDLE spawns, which resolves via ordinary $PATH search -- see `execStartFor`'s own
-        # header for why that distinction is exactly what makes or breaks a bare name on NixOS.
-        # Without this, `command` rendered as PLAIN ARGV, and systemd's own internal resolution
-        # of the bare `swaylock` inside it -- never $PATH-aware, see `execStartFor` -- failed
-        # outright: verified live, `lock-at-start.service: Unable to locate executable 'swaylock'`,
-        # 203/EXEC, the unit settling to "inactive (dead)" with no lock ever taken -- a live,
-        # physical-console security gap on a seated host, not merely a cosmetic failure.
-        # `lockBin` itself stays bare regardless (`lockCommand`'s own doc: "Must be a bare command
-        # name, not a path" -- the assembled idle invocation's `pkill -USR1 <lockBin>` matches on
-        # PROCESS NAME, which an absolute path would silently break) -- so the fix is routing THIS
-        # ExecStart through the same absolute-`/bin/sh` hop `idle` already gets, never changing
-        # `lockBin` itself. Re-verified end-to-end live after this change's own reasoning (a
-        # `Type=forking` transient unit given the identical shape, absolute interpreter + bare
-        # `swaylock -f` inside it): settles cleanly to "active (running)", confirming
-        # `serviceType = "forking"` here was already the right choice -- the unit's earlier
-        # "reports failed" symptom was this same 203/EXEC bug, not a second Type=/fork mismatch.
-        runShell = true;
+        # sd-switch's KeepOld path applies to active units. The oneshot latch above deliberately
+        # stays active after unlock, so activation changes cannot turn this into a mid-session lock.
+        restartIfChanged = false;
+        # `command` is an absolute store-path script, so systemd needs no shell parsing and the
+        # script's own final `exec` resolves the consumer-supplied bare locker through its PATH.
+        runShell = false;
       };
     })
     // (lib.optionalAttrs cfg.polkitAgent.enable {
@@ -886,6 +904,16 @@ in
               compositor did, which is how a whole desktop's worth of healthy components once ended
               the session dead -- see this file's header, "⚠ THE READINESS GUARANTEE IS
               CONDITIONAL".
+            '';
+          };
+
+          restartIfChanged = lib.mkOption {
+            type = lib.types.nullOr lib.types.bool;
+            default = null;
+            description = ''
+              Home Manager sd-switch's `X-RestartIfChanged=` policy. `null` omits it and keeps
+              sd-switch's default stop/start behavior; `false` preserves an active process when
+              the rendered unit changes.
             '';
           };
 

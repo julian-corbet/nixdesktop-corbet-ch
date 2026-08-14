@@ -20,6 +20,14 @@
   #   imports = [ inputs.noctalia.homeModules.default inputs.nixdesktop.homeManagerModules.noctalia ];
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
+  # Home Manager is a check-only input: the session module emits user units through its module
+  # system, so the lock-at-start regression must validate the actual serialized unit rather than
+  # only the intermediate attrset.
+  inputs.home-manager = {
+    url = "github:nix-community/home-manager";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
+
   # nixhost IS an input, for EXACTLY ONE THING: `lib.probeFact`/`lib.collectProbes` (its
   # `lib/facts.nix`). modules/session.nix reads two facts nixhost owns —
   # `nixhost.environments.<env>.resources.gpu.<device>.access` (the device CLAIM) and
@@ -59,7 +67,7 @@
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
-  outputs = { self, nixpkgs, nixhost, system-manager }:
+  outputs = { self, nixpkgs, nixhost, system-manager, home-manager }:
     let
       forAllSystems = nixpkgs.lib.genAttrs [ "x86_64-linux" "aarch64-linux" ];
 
@@ -320,7 +328,7 @@
       checks = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
         {
-          idle-assembly = import ./checks/idle-assembly.nix { inherit pkgs; };
+          idle-assembly = import ./checks/idle-assembly.nix { inherit pkgs home-manager; };
           # Same shape and same reasoning as idle-assembly above (a home-manager module `nix flake
           # check` never evaluates on its own) -- proves the keyring PROVIDER assembly instead:
           # oo7 vs gnome-keyring render the right (verified-not-assumed) Type=/Restart=, two
