@@ -278,7 +278,7 @@ let
     { nixdesktop.sessions.desk = seated { }; }
   ]);
 
-  # Trips modules/monitors.nix-style raw-name detection (§8 assertion 10): a device NAME shaped
+  # Trips nixdisplay monitors-style raw-name detection (§8 assertion 10): a device NAME shaped
   # like the exact thing this design exists to remove, arriving from nixhost's claim exactly as it
   # would from a real (mis-)declared inventory -- launcher.nix has no way to tell this apart from a
   # legitimate slug except by shape. Deliberately has no `cardPath`/`cardNamePath` etc at all:

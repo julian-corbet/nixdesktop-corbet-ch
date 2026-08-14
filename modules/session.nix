@@ -356,7 +356,7 @@ let
         default = null;
         example = "docked";
         description = ''
-          A `nixdesktop.layouts.<name>` -- which panels this session expects and where. `null`
+          A `nixdisplay.layouts.<name>` -- which panels this session expects and where. `null`
           leaves output arrangement entirely to the compositor's defaults, which is the right
           answer for a headless session and for a single-screen machine nobody has an opinion
           about.
@@ -388,11 +388,11 @@ let
           without one." One list entry per output; `[ ]`, the default, is the ordinary case for
           every session that only ever draws to real hardware.
 
-          MODELED AS PART OF THE SESSION, NOT AS A `layout` ENTRY. `nixdesktop.layouts` exists to
+          MODELED AS PART OF THE SESSION, NOT AS A `layout` ENTRY. `nixdisplay.layouts` exists to
           arrange NAMED, IDENTIFIABLE hardware (an EDID triple or a connector) in physical
-          POSITION relative to other panels -- see modules/layouts.nix's own header. A virtual
+          POSITION relative to other panels -- see nixdisplay's own layouts module header. A virtual
           output has neither: no EDID, no connector, no position to overlap-check against a real
-          screen, and no identity that could roam between hosts the way a `nixdesktop.monitors`
+          screen, and no identity that could roam between hosts the way a `nixdisplay.monitors`
           entry does. It belongs to whichever session asked for it, exactly the way `renderer` or
           `environment` do -- not to a layout describing a desk.
 
@@ -553,8 +553,15 @@ let
   contestedSeats = lib.filterAttrs (_: names: lib.length names > 1)
     (lib.groupBy (n: seatedSessions.${n}.seat) (lib.attrNames seatedSessions));
 
-  layoutsComposed = config.nixdesktop ? layouts;
-  declaredLayouts = if layoutsComposed then config.nixdesktop.layouts else { };
+  # The output layouts moved to the sibling repo nixdisplay, so this is a cross-namespace read of
+  # `nixdisplay.layouts` -- through lib.probeFact, never a bare `config.nixdisplay ? layouts` (which
+  # would THROW on any eval that composes nixdesktop WITHOUT nixdisplay, including this repo's own
+  # checks) and never an `imports` of nixdisplay. probeFact reports state "absent" when nixdisplay
+  # is not composed here (silent, legitimate) and warns only when it IS composed but the `layouts`
+  # leaf moved or was renamed -- see nixhost's lib/facts.nix for the defect class.
+  layoutsProbe = probeFact { inherit config; namespace = "nixdisplay"; path = [ "layouts" ]; fallback = { }; };
+  declaredLayouts = layoutsProbe.value;
+  layoutsComposed = layoutsProbe.state != "absent";
 in
 {
   options.nixdesktop.sessions = mkOption {
@@ -681,13 +688,13 @@ in
       (lib.filterAttrs (_: s: s.user == "") enabledSessions)
 
     # ── A LAYOUT THAT DOES NOT EXIST ──────────────────────────────────────────────────────────
-    # Only meaningful when modules/layouts.nix is composed at all; a host that leaves output
-    # arrangement to the compositor imports no layouts and names none.
+    # Only meaningful when nixdisplay's layouts table is composed at all; a host that leaves output
+    # arrangement to the compositor composes no nixdisplay and names none.
     ++ lib.optionals layoutsComposed (lib.mapAttrsToList
       (name: s: {
         assertion = false;
         message = ''
-          nixdesktop.sessions.${name}.layout names "${s.layout}", which `nixdesktop.layouts` does
+          nixdesktop.sessions.${name}.layout names "${s.layout}", which `nixdisplay.layouts` does
           not declare. Declared layouts:
           ${if declaredLayouts == { } then "  (none)" else lib.concatMapStringsSep "\n" (n: "            - ${n}") (lib.attrNames declaredLayouts)}
         '';
@@ -700,6 +707,12 @@ in
     # without this -- and the denied-list direction is the dangerous one, because an empty
     # complement reads exactly like "nothing to deny".
     (collectProbes [ environmentsProbe inventoryProbe ]).warnings
+
+    # The layouts probe's own report: nixdisplay IS composed here, but its `layouts` leaf moved or
+    # was renamed. Silent without this -- a future rename of `nixdisplay.layouts` would empty
+    # `declaredLayouts` and the missing-layout assertion above would stop firing, so a session
+    # naming a real layout by the new name would read as "names a layout that does not exist".
+    ++ layoutsProbe.warnings
 
     # A session naming an environment nixhost does not declare. A WARNING rather than an
     # assertion, and only when the table is non-empty: an empty table legitimately means nixhost

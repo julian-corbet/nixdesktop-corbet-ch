@@ -1,14 +1,14 @@
 {
-  description = "nixdesktop — the compositor-neutral desktop policy and shared-component layer for a declarative, CPU-rendered Wayland desktop: the estate's monitor registry, its output layouts, its session instances, plus home-manager modules for the components around whichever compositor you run";
+  description = "nixdesktop — the compositor-neutral desktop policy and shared-component layer for a declarative, CPU-rendered Wayland desktop: its session instances and launcher, plus home-manager modules for the components around whichever compositor you run (the monitor registry and output layouts moved to the sibling repo nixdisplay)";
 
   # NO COMPOSITOR, NO DESKTOP SHELL, NO PACKAGE SET IS AN INPUT HERE. This flake generates config,
   # declares roles and declares identity/geometry, and all of that is pure Nix.
   #
   # NOT EVEN THE COMPOSITOR ITSELF IS AN INPUT. A compositor's own config module lives in its own
   # sibling repo (nixniri for niri, nixscroll for scroll, or any future compositor repo that speaks
-  # the same `nixdesktop.want` / `nixdesktop.monitors` / `nixdesktop.layouts` contracts), keeping
-  # this flake genuinely compositor-neutral rather than pulling in one compositor's config
-  # generator by default — see profiles/desktop.nix and the README's "The split" section.
+  # the same `nixdesktop.want` and `nixdisplay.{monitors,layouts}` contracts), keeping this flake
+  # genuinely compositor-neutral rather than pulling in one compositor's config generator by default
+  # — see profiles/desktop.nix and the README's "The split" section.
   #
   # In particular noctalia (a QML shell, supported by home/noctalia.nix) is NOT an input here. A
   # flake input is fetched whenever this flake is evaluated, so declaring it would put a QML shell
@@ -111,28 +111,20 @@
       nixosModules.default = ./profiles/desktop.nix;
 
       # ── IDENTITY AND GEOMETRY ─────────────────────────────────────────────────────────────
-      # The two tables the compositor repos read. Pure options and assertions — no `pkgs`, no
-      # units, nothing platform-specific — so both are offered on BOTH planes, and that is not
-      # symmetry for its own sake: the Arch boxes (the workstation, the laptop) run system-manager and
-      # have exactly the same monitors on exactly the same desks as the NixOS ones. A registry
-      # that only existed on one plane would be re-typed on the other, which is the duplication
-      # `monitors` exists to delete.
+      # The monitor registry and output layouts USED to live here; they moved to the published
+      # sibling repo nixdisplay (github.com/julian-corbet/nixdisplay-corbet-ch), which now owns the
+      # `nixdisplay.{monitors,layouts,dynamicOutputs}` namespace and their checks. modules/session.
+      # nix reads `nixdisplay.layouts` defensively through `lib.probeFact` (never an input on that
+      # domain), so a host that composes nixdesktop without nixdisplay evaluates fine and simply
+      # names no layouts.
       #
-      # `monitors` is FLEET-WIDE identity (a panel roams between hosts); `layouts` is per-host
-      # arrangement (a desk does not). They are separate modules, not one, because a host that
-      # addresses only connectors — a headless box, an evdi-only dock — legitimately wants the
-      # second and not the first, and each reads the other defensively rather than importing it.
-      nixosModules.monitors = ./modules/monitors.nix;
-      nixosModules.layouts = ./modules/layouts.nix;
       # desktops: the per-machine identity-accent registry. Exported under all three plane names
-      # for the same reason monitors/layouts are -- it is a plain option+assertion module with no
-      # `pkgs` dependency and no plane-specific config, so the SAME file composes into a NixOS, a
-      # system-manager or a home-manager evaluation unchanged. That is what makes it usable as a
-      # cross-plane carrier at all: a consumer on the user plane (a compositor config) and one on
-      # the system plane can both read the same table. See the module's own header.
+      # because it is a plain option+assertion module with no `pkgs` dependency and no plane-specific
+      # config, so the SAME file composes into a NixOS, a system-manager or a home-manager evaluation
+      # unchanged. That is what makes it usable as a cross-plane carrier at all: a consumer on the
+      # user plane (a compositor config) and one on the system plane can both read the same table.
+      # See the module's own header.
       nixosModules.desktops = ./modules/desktops.nix;
-      systemManagerModules.monitors = ./modules/monitors.nix;
-      systemManagerModules.layouts = ./modules/layouts.nix;
       systemManagerModules.desktops = ./modules/desktops.nix;
       homeManagerModules.desktops = ./modules/desktops.nix;
 
@@ -256,12 +248,8 @@
         # is why real configs end up writing `sleep 1 && waybar`.
         session = ./home/session.nix;
 
-        # kanshi profiles generated from `nixdesktop.layouts`, for the one thing a compositor's own
-        # output config cannot express: switching an output off BECAUSE others are present. Needs
-        # `session` composed alongside it (it declares its daemon through
-        # `nixdesktop.session.services`), and needs the compositor's own `nixdesktop.layout` left
-        # null on the same host -- see that file's header on why exactly one owner per output.
-        kanshi = ./home/kanshi.nix;
+        # kanshi moved to nixdisplay (github.com/julian-corbet/nixdisplay-corbet-ch), alongside the
+        # `nixdisplay.{monitors,layouts,dynamicOutputs}` tables it generates its profiles from.
 
         waybar = ./home/waybar.nix;
         mako = ./home/mako.nix;
@@ -325,10 +313,10 @@
       # home/session.nix, which assembles the swayidle invocation itself with real branching logic.
       #
       # `nixosModules`/`systemManagerModules` are not evaluated by `nix flake check` either — it
-      # only type-checks that they ARE modules. So the tables below (monitors, layouts, sessions,
-      # launcher) would ship completely unproven without these: every one of them is assertions
-      # over derived arithmetic, or — for `launcher` — a real rendered systemd unit, which is
-      # precisely the code that fails quietly.
+      # only type-checks that they ARE modules. So the tables below (sessions, launcher) would ship
+      # completely unproven without these: every one of them is assertions over derived arithmetic,
+      # or — for `launcher` — a real rendered systemd unit, which is precisely the code that fails
+      # quietly.
       checks = forAllSystems (system:
         let pkgs = nixpkgs.legacyPackages.${system}; in
         {
@@ -398,8 +386,6 @@
           # automation and brightness, because the thing that has to stay false or empty is one of
           # nixpkgs' OWN options, which no stub could report on.
           asset-roles = import ./checks/asset-roles.nix { inherit pkgs nixpkgs system; };
-          monitor-identity = import ./checks/monitor-identity.nix { inherit pkgs; };
-          layout-geometry = import ./checks/layout-geometry.nix { inherit pkgs; };
           # `sessionModule` is passed already closed over nixhost's `probeFact`/`collectProbes`,
           # so the checks exercise the module exactly as a consumer imports it -- decoys included.
           session-devices = import ./checks/session-devices.nix { inherit pkgs sessionModule; };

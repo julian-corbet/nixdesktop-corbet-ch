@@ -54,6 +54,20 @@ let
     };
   };
 
+  # ── STAND-IN nixdisplay, NOT THE REAL ONE ───────────────────────────────────────────────────
+  #
+  # Same reasoning as the nixhost stub above: the output layouts moved to the sibling repo
+  # nixdisplay, which modules/session.nix reads through `lib.probeFact` (the MECHANISM, exercised by
+  # the launcher/session checks) — not by importing nixdisplay's DATA modules, which are under
+  # independent development and would make these checks depend on that working tree. Only the one
+  # leaf session.nix reads is declared: `nixdisplay.layouts`, keys only (the layout details belong
+  # to nixdisplay and this module only asks which names exist). Composing this makes `config ?
+  # nixdisplay` true, so probeFact reports state "resolved" and the missing-layout assertion the two
+  # tests below exercise can fire.
+  nixdisplayStub = { ... }: {
+    options.nixdisplay.layouts = mkOption { type = types.attrsOf types.anything; default = { }; };
+  };
+
   # ── THE RENAME DECOYS ───────────────────────────────────────────────────────────────────────
   #
   # Each composes the SAME top-level `nixhost` namespace the real module would — so `config ?
@@ -378,10 +392,10 @@ let
     "a layout the layouts table does not declare is rejected" =
       let
         cfg = evalWith [
-          ../modules/layouts.nix
+          nixdisplayStub
           sessionModule
           {
-            nixdesktop.layouts.docked = { description = "fixture"; outputs = [ ]; };
+            nixdisplay.layouts.docked = { };
             nixdesktop.sessions.remote = headless { layout = "dockd"; };
           }
         ];
@@ -391,15 +405,15 @@ let
     "naming a layout that exists is fine" =
       let
         cfg = evalWith [
-          ../modules/layouts.nix
+          nixdisplayStub
           sessionModule
           {
-            nixdesktop.layouts.docked = { description = "fixture"; outputs = [ ]; };
+            nixdisplay.layouts.docked = { };
             nixdesktop.sessions.remote = headless { layout = "docked"; };
           }
         ];
       in
-      countMatching "which `nixdesktop.layouts` does" (firedMessages cfg) == 0;
+      countMatching "which `nixdisplay.layouts` does" (firedMessages cfg) == 0;
 
     # ── WARNINGS ──────────────────────────────────────────────────────────────────────────────
     "an environment nixhost does not declare warns" =
