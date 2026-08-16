@@ -441,6 +441,20 @@ let
       startLimitIntervalSec = 60;
       startLimitBurst = 5;
 
+      # A RECONFIGURATION MUST NOT RESTART A LIVE SEATED SESSION. This unit IS the graphical session:
+      # restarting it kills every terminal, editor, agent CLI and waypipe client running under the
+      # compositor (see knowledge/hosts/shared/seated-session-restart.md -- "scroll crashed and took
+      # all the Claude Codes with it"). system-manager (and NixOS switch-to-configuration) restart a
+      # unit whose rendered store path moved, so an unrelated activation would otherwise tear the
+      # session down as a pure side effect. `restartIfChanged = false` is a SERVICE-level option that
+      # renders `X-RestartIfChanged=false` into `[Service]`, which system-manager's engine reads
+      # (activate/services.rs -> "Skipping restart of <unit>: X-RestartIfChanged=false") and NixOS's
+      # switch honours identically -- the live session is left running across every activation. A
+      # deliberate session change is applied by logging the seat out / rebooting, never mid-use. Do
+      # NOT move this into `unitConfig`/`serviceConfig`: the engine only reads the `[Service]` key,
+      # and the option already renders there.
+      restartIfChanged = false;
+
       serviceConfig = {
         # THE ENTIRE SEATING MECHANISM: PAMName + User on a SYSTEM unit (this is `systemd.services`,
         # never `systemd.user.services`) is the only shape `sd_pid_get_session()` can ever resolve
