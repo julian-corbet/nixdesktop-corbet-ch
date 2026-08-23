@@ -97,7 +97,6 @@ let
   }).forever;
 
   bar = wholeDesktop.bar;
-  polkitAgent = wholeDesktop."polkit-agent";
 
   # The defaults, read back off a rendered unit rather than restated as literals here -- the
   # arithmetic assertions below are about what a host ACTUALLY gets, so re-typing the numbers would
@@ -130,12 +129,6 @@ let
         [ "bar" "notifications" "osd" "idle" "polkit-agent" "cliphist-text" "cliphist-image" ];
     "...and a raw services.<name> entry, the generic mechanism the blocks compile down to" =
       hasBackoff wholeDesktop.custom;
-    "the polkit agent waits for the system-bus authority before it can report running" =
-      lib.length polkitAgent.Service.ExecStartPre == 1
-      && lib.hasPrefix "/nix/store/" (lib.head polkitAgent.Service.ExecStartPre)
-      && polkitAgent.Service.ExecStart == "/fake/polkit-agent";
-    "unrelated components do not inherit the polkit-specific pre-start gate" =
-      bar.Service.ExecStartPre == [ ];
     "a restart = \"no\" component still renders the start limit, which applies to manual starts too" =
       hasBackoff neverRestarts && neverRestarts.Service.Restart == "no";
 

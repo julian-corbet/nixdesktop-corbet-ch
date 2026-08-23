@@ -226,24 +226,6 @@ let
       exec ${lockerName} -f
     '';
 
-  # A graphical authentication agent and the system polkit authority live in different systemd
-  # managers, so a user-unit After= edge cannot order one against the other. This is a measured
-  # race: the MATE agent can start first, log ServiceUnknown, and then stay alive without ever
-  # registering. Wait for the well-known system-bus name before execing the agent. A genuinely
-  # missing authority still fails visibly after thirty seconds and reaches the ordinary bounded
-  # service retry policy below.
-  waitForPolkit = pkgs.writeShellScript "nixdesktop-wait-for-polkit" ''
-    deadline=$((SECONDS + 30))
-    until ${lib.getExe' pkgs.systemd "busctl"} --system status org.freedesktop.PolicyKit1 \
-      >/dev/null 2>&1; do
-      if (( SECONDS >= deadline )); then
-        echo "nixdesktop: org.freedesktop.PolicyKit1 was not owned after 30 seconds" >&2
-        exit 1
-      fi
-      ${lib.getExe' pkgs.coreutils "sleep"} 0.2
-    done
-  '';
-
   # ── The keyring PROVIDER, assembled HERE ───────────────────────────────────────────────────
   #
   # THE DECISION THIS REPLACES. Until this pass, `keyring` took one bare `command` string (an
@@ -513,7 +495,6 @@ let
     };
     Service = {
       Type = svc.serviceType;
-      ExecStartPre = svc.execStartPre;
       ExecStart = execStartFor svc;
       Restart = svc.restart;
       RemainAfterExit = svc.remainAfterExit;
@@ -674,7 +655,6 @@ let
       "polkit-agent" = defaults {
         inherit (cfg.polkitAgent) command;
         description = "Polkit authentication agent";
-        execStartPre = [ (toString waitForPolkit) ];
       };
     })
     # Guarded on `effectiveKeyringCommand != null` too, the same shape as the idle daemon above --
@@ -934,18 +914,6 @@ in
               Home Manager sd-switch's `X-RestartIfChanged=` policy. `null` omits it and keeps
               sd-switch's default stop/start behavior; `false` preserves an active process when
               the rendered unit changes.
-            '';
-          };
-
-          execStartPre = lib.mkOption {
-            type = lib.types.listOf lib.types.str;
-            default = [ ];
-            example = [ "/nix/store/...-wait-for-prerequisite" ];
-            description = ''
-              Commands run before the component's main process. Entries are rendered as
-              `ExecStartPre=` lines; an empty list renders no directive. This is for prerequisites
-              outside the user manager's dependency graph, where `After=` cannot express the
-              required ordering (the polkit system-bus authority is the first consumer).
             '';
           };
 
