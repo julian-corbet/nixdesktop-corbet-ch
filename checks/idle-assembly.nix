@@ -167,6 +167,10 @@ let
     "lockAtStart renders the session-lifetime latch" =
       renderedAtStart.Service.Type == "oneshot"
       && renderedAtStart.Service.RemainAfterExit;
+    "lockAtStart keeps the latch scoped and ordered with the graphical session" =
+      renderedAtStart.Unit.PartOf == [ "graphical-session.target" ]
+      && renderedAtStart.Unit.After == [ "graphical-session.target" ]
+      && renderedAtStart.Install.WantedBy == [ "graphical-session.target" ];
     "lockAtStart uses a plain absolute store-path wrapper" =
       !atStart."lock-at-start".runShell
       && lib.hasPrefix builtins.storeDir atStart."lock-at-start".command;
@@ -212,6 +216,10 @@ then
       # attrset. A store-path ExecStart must remain one physical line and parse as a user unit.
       grep -Fx 'Type=oneshot' "$renderedUnit"
       grep -Fx 'RemainAfterExit=true' "$renderedUnit"
+      grep -Fx 'Restart=no' "$renderedUnit"
+      grep -Fx 'PartOf=graphical-session.target' "$renderedUnit"
+      grep -Fx 'After=graphical-session.target' "$renderedUnit"
+      grep -Fx 'WantedBy=graphical-session.target' "$renderedUnit"
       grep -Fx 'X-RestartIfChanged=false' "$renderedUnit"
       grep -E '^ExecStart=/nix/store/[^[:space:]]+-nixdesktop-lock-at-start$' "$renderedUnit"
       test "$(grep -c '^ExecStart=' "$renderedUnit")" -eq 1
@@ -222,33 +230,49 @@ then
         ${lib.getExe' pkgs.systemd "systemd-analyze"} --user verify "$renderedUnit"
 
       # The private wrapper itself carries every detector dependency as an absolute store path and
-      # compares the full executable basename/display literally before its final locker exec.
+      # compares the full executable basename/display literally around its background launch.
       grep -F '${lib.getExe' pkgs.procps "pgrep"}' "$lockCommand"
       grep -F '${lib.getExe' pkgs.coreutils "readlink"}' "$lockCommand"
+      grep -F '${lib.getExe' pkgs.coreutils "sleep"}' "$lockCommand"
       grep -F '${lib.getExe' pkgs.coreutils "tr"}' "$lockCommand"
       grep -F '${lib.getExe pkgs.gnugrep}' "$lockCommand"
       grep -F 'candidate_exe##*/' "$lockCommand"
       grep -F 'WAYLAND_DISPLAY=$WAYLAND_DISPLAY' "$lockCommand"
-      grep -F "exec 'swaylock[.*]-effects' -f" "$lockCommand"
+      grep -F "'swaylock[.*]-effects' -f &" "$lockCommand"
+      grep -F 'while [ "$attempt" -lt 100 ]' "$lockCommand"
 
-      # One real ELF covers both branches: --hold stays alive as the existing locker; -f records
-      # that the wrapper really executed a new locker and returns like a daemonizing parent.
+      # One real ELF covers all process shapes: --hold is an existing locker; -f can stay in the
+      # foreground, really daemonize, or exit immediately. Markers contain the surviving PID so
+      # every spawned process is proved alive and then cleaned up explicitly.
       $CC -x c -o "$TMPDIR/locker-elf" - <<'EOF'
       #include <fcntl.h>
+      #include <stdio.h>
       #include <stdlib.h>
       #include <string.h>
       #include <unistd.h>
+      static int write_marker(const char *path) {
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        if (fd < 0) return 21;
+        if (dprintf(fd, "%ld\n", (long)getpid()) < 0) return 23;
+        close(fd);
+        return 0;
+      }
       int main(int argc, char **argv) {
         if (argc == 2 && strcmp(argv[1], "--hold") == 0) {
           for (;;) pause();
         }
         if (argc == 2 && strcmp(argv[1], "-f") == 0) {
           const char *marker = getenv("SPAWN_MARKER");
+          const char *mode = getenv("LOCKER_MODE");
           if (marker == NULL) return 20;
-          int fd = open(marker, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-          if (fd < 0) return 21;
-          close(fd);
-          return 0;
+          if (mode != NULL && strcmp(mode, "daemonize") == 0) {
+            pid_t pid = fork();
+            if (pid < 0) return 24;
+            if (pid > 0) return 0;
+          }
+          if (write_marker(marker) != 0) return 21;
+          if (mode != NULL && strcmp(mode, "exit") == 0) return 0;
+          for (;;) pause();
         }
         return 22;
       }
@@ -257,13 +281,53 @@ then
       cp "$TMPDIR/locker-elf" "$TMPDIR/$nearRegexMatchName"
 
       holder_pid=""
-      trap 'test -z "$holder_pid" || kill "$holder_pid" 2>/dev/null || true' EXIT
+      spawned_pids=""
+      cleanup_processes() {
+        for cleanup_pid in $holder_pid $spawned_pids; do
+          test -z "$cleanup_pid" || kill "$cleanup_pid" 2>/dev/null || true
+        done
+      }
+      trap cleanup_processes EXIT
 
-      # With no existing locker, the wrapper must execute the configured -f branch.
-      no_existing_marker="$TMPDIR/no-existing-spawned"
-      PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-a SPAWN_MARKER="$no_existing_marker" \
+      wait_for_marker() {
+        marker_path=$1
+        for _attempt in $(seq 1 100); do
+          test -s "$marker_path" && return 0
+          sleep 0.02
+        done
+        return 1
+      }
+
+      # A foreground locker is the live regression: the wrapper must return while its child stays
+      # alive, rather than keeping the oneshot's start job open until the human unlocks.
+      foreground_marker="$TMPDIR/foreground-spawned"
+      PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-foreground SPAWN_MARKER="$foreground_marker" \
+        LOCKER_MODE=foreground \
         /bin/sh -c "$lockCommand"
-      test -e "$no_existing_marker"
+      wait_for_marker "$foreground_marker"
+      foreground_pid=$(cat "$foreground_marker")
+      kill -0 "$foreground_pid"
+      spawned_pids="$spawned_pids $foreground_pid"
+
+      # A genuinely daemonizing launcher also works: readiness follows the surviving executable,
+      # not the short-lived launcher PID returned by the shell.
+      daemon_marker="$TMPDIR/daemon-spawned"
+      PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-daemon SPAWN_MARKER="$daemon_marker" \
+        LOCKER_MODE=daemonize \
+        /bin/sh -c "$lockCommand"
+      wait_for_marker "$daemon_marker"
+      daemon_pid=$(cat "$daemon_marker")
+      kill -0 "$daemon_pid"
+      spawned_pids="$spawned_pids $daemon_pid"
+
+      # An exec that disappears immediately must not arm a false active-exited latch.
+      immediate_marker="$TMPDIR/immediate-exit"
+      if PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-exit SPAWN_MARKER="$immediate_marker" \
+        LOCKER_MODE=exit /bin/sh -c "$lockCommand"; then
+        echo "an immediately-exiting locker incorrectly satisfied readiness" >&2
+        exit 1
+      fi
+      test -e "$immediate_marker"
 
       # A real same-UID, same-display ELF whose basename is longer than comm's 15 bytes must be
       # detected without starting a duplicate. This is the concrete old-pgrep-x regression.
@@ -295,8 +359,12 @@ then
       # The same executable under the same UID but on another display is not this session's lock.
       other_display_marker="$TMPDIR/other-display-spawned"
       PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-b SPAWN_MARKER="$other_display_marker" \
+        LOCKER_MODE=foreground \
         /bin/sh -c "$lockCommand"
-      test -e "$other_display_marker"
+      wait_for_marker "$other_display_marker"
+      other_display_pid=$(cat "$other_display_marker")
+      kill -0 "$other_display_pid"
+      spawned_pids="$spawned_pids $other_display_pid"
 
       kill "$holder_pid"
       wait "$holder_pid" 2>/dev/null || true
@@ -320,8 +388,12 @@ then
       done
       test "$holder_ready" = true
       PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-c SPAWN_MARKER="$exact_name_marker" \
+        LOCKER_MODE=foreground \
         /bin/sh -c "$lockCommand"
-      test -e "$exact_name_marker"
+      wait_for_marker "$exact_name_marker"
+      exact_name_pid=$(cat "$exact_name_marker")
+      kill -0 "$exact_name_pid"
+      spawned_pids="$spawned_pids $exact_name_pid"
       kill -0 "$holder_pid"
 
       touch "$out"
