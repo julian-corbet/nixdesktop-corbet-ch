@@ -199,14 +199,14 @@ let
   # RemainAfterExit keeps later Home Manager activations from re-locking a session whose human has
   # already unlocked it.
   #
-  # `-f` has no portable process contract. For a foreground command such as swaylock (where it
-  # means "show failed attempts"), backgrounding is load-bearing: a synchronous ExecStart would
-  # leave the oneshot and the whole user manager in `starting` until the human unlocks. For a
-  # daemonizing command such as nixlock >= 0.1.3, the launcher's successful EXIT is the readiness
-  # protocol: its parent waits until the compositor confirms the child holds the session lock.
-  # Process presence cannot substitute for that handshake because the not-yet-ready parent has the
-  # same executable and display as the eventual child. `lockAtStartCommandMode` makes the consumer
-  # state which contract its configured command implements instead of guessing from its name.
+  # `-f` has no universal process contract, but it IS `--daemonize` for the default command,
+  # swaylock 1.8.6 (`-F`, not `-f`, is `--show-failed-attempts`), and for nixlock >= 0.1.3. Their
+  # launcher's successful EXIT is the readiness protocol: its parent waits until the compositor
+  # confirms the child holds the session lock. Process presence cannot substitute for that
+  # handshake because the not-yet-ready parent has the same executable and display as the eventual
+  # child. A custom or legacy command whose `-f` genuinely remains in the foreground instead needs
+  # backgrounding, or the oneshot and whole user manager remain in `starting` until human unlock.
+  # `lockAtStartCommandMode` makes the consumer state that command contract explicitly.
   #
   # Enumerate by UID only, then compare the untruncated executable basename as an ordinary quoted
   # string. `pgrep -x` compares Linux's 15-byte `comm` field and is therefore wrong for valid names
@@ -1691,19 +1691,22 @@ in
 
       lockAtStartCommandMode = lib.mkOption {
         type = lib.types.enum [ "foreground" "daemonizing" ];
-        default = "foreground";
+        default = "daemonizing";
         description = ''
           The process contract implemented by `lockCommand -f` when `lockAtStart` starts it.
-
-          `foreground` means that command remains as the lock-owning process; the startup wrapper
-          backgrounds it and accepts only a stable exact executable on this Wayland display. This
-          is swaylock's contract (`-f` means "show failed attempts", not daemonize).
 
           `daemonizing` means the launched parent exits zero only after a surviving child has
           acquired the compositor's session lock, and exits nonzero on failure. The wrapper waits
           for that parent instead of treating its mere presence as readiness, then verifies the
-          child. This is nixlock >= 0.1.3's contract. Setting this mode for a command that merely
-          forks without a post-lock readiness handshake would make the gate dishonest.
+          child. This is the default because it is the `-f`/`--daemonize` contract of both swaylock
+          1.8.6 (`-F`/`--show-failed-attempts` is a different flag) and nixlock >= 0.1.3. Setting
+          this mode for a command that merely forks without a post-lock readiness handshake would
+          make the gate dishonest.
+
+          `foreground` is an explicit compatibility mode for a custom or legacy command whose
+          `-f` genuinely remains as the lock-owning process. The wrapper backgrounds it and accepts
+          only a stable exact executable on this Wayland display; process stability cannot prove
+          compositor lock acquisition, so do not select it for a daemonizing command.
         '';
       };
 

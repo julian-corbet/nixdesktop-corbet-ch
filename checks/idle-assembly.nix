@@ -72,11 +72,12 @@ let
   atStartNoIdle = sessionServices (merge { lockAtStart = true; lockAfterSeconds = null; });
   noAtStart = sessionServices (merge { });
   atStartOtherLocker = sessionServices (merge { lockAtStart = true; lockCommand = "waylock"; });
-  longLockerName = "swaylock[.*]-effects";
-  nearRegexMatchName = "swaylock.-effects";
+  longLockerName = "legacy-locker[.*]-effects";
+  nearRegexMatchName = "legacy-locker.-effects";
   atStartLongLocker = sessionServices (merge {
     lockAtStart = true;
     lockCommand = longLockerName;
+    lockAtStartCommandMode = "foreground";
   });
   atStartDaemonizingLongLocker = sessionServices (merge {
     lockAtStart = true;
@@ -199,8 +200,8 @@ let
       atStartOtherLocker."lock-at-start".command != atStart."lock-at-start".command;
     "lockAtStart gives long regex-like locker names their own wrapper" =
       atStartLongLocker."lock-at-start".command != atStart."lock-at-start".command;
-    "lockAtStart command contract defaults to foreground" =
-      defaultLockAtStartCommandMode == "foreground";
+    "lockAtStart command contract defaults to daemonizing" =
+      defaultLockAtStartCommandMode == "daemonizing";
     "lockAtStart command contract changes the wrapper" =
       atStartDaemonizingLongLocker."lock-at-start".command
       != atStartLongLocker."lock-at-start".command;
@@ -254,7 +255,7 @@ then
         grep -F 'candidate_exe##*/' "$command"
         grep -F 'WAYLAND_DISPLAY=$WAYLAND_DISPLAY' "$command"
       done
-      grep -F "'swaylock[.*]-effects' -f &" "$foregroundLockCommand"
+      grep -F "'legacy-locker[.*]-effects' -f &" "$foregroundLockCommand"
       grep -F 'while [ "$attempt" -lt 100 ]' "$foregroundLockCommand"
       grep -F 'while kill -0 "$launcher_pid"' "$daemonizingLockCommand"
       grep -F 'wait "$launcher_pid" || launcher_status=$?' "$daemonizingLockCommand"
