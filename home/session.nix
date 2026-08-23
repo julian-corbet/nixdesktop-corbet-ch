@@ -194,18 +194,19 @@ let
 
   # A lock-at-start unit is a SESSION gate, not a long-running owner of the locker process. Keep a
   # systemd oneshot latch active for the graphical session lifetime: the first start either finds
-  # this exact locker already holding this Wayland display, or starts it as a background child and
-  # waits until that executable is actually present. Both paths then return success, and
+  # this exact locker already holding this Wayland display, or starts it according to the
+  # configured command's declared process contract. Both paths then return success, and
   # RemainAfterExit keeps later Home Manager activations from re-locking a session whose human has
   # already unlocked it.
   #
-  # Backgrounding is load-bearing. `-f` is NOT a daemonize flag for either swaylock (it means
-  # "show failed attempts") or nixlock, so `exec <locker> -f` under Type=oneshot leaves the start
-  # job running for the locker's entire lifetime. Because this unit is pulled in by the session's
-  # target, that also leaves the whole user manager in `starting`; Home Manager then concludes the
-  # manager is unavailable and skips its generic sd-switch phase. A background child remains in
-  # the unit cgroup after a RemainAfterExit oneshot's launcher exits, so PartOf still tears down a
-  # live locker with the graphical session while the active-exited latch survives normal unlock.
+  # `-f` has no portable process contract. For a foreground command such as swaylock (where it
+  # means "show failed attempts"), backgrounding is load-bearing: a synchronous ExecStart would
+  # leave the oneshot and the whole user manager in `starting` until the human unlocks. For a
+  # daemonizing command such as nixlock >= 0.1.3, the launcher's successful EXIT is the readiness
+  # protocol: its parent waits until the compositor confirms the child holds the session lock.
+  # Process presence cannot substitute for that handshake because the not-yet-ready parent has the
+  # same executable and display as the eventual child. `lockAtStartCommandMode` makes the consumer
+  # state which contract its configured command implements instead of guessing from its name.
   #
   # Enumerate by UID only, then compare the untruncated executable basename as an ordinary quoted
   # string. `pgrep -x` compares Linux's 15-byte `comm` field and is therefore wrong for valid names
@@ -241,31 +242,66 @@ let
         exit 0
       fi
 
-      ${lockerName} -f &
-      launcher_pid=$!
+      ${
+        if cfg.idleAndLock.lockAtStartCommandMode == "foreground"
+        then ''
+          ${lockerName} -f &
+          launcher_pid=$!
 
-      # Accommodate both foreground lockers and implementations whose launcher really does fork:
-      # readiness is the configured executable on this exact display, never the launcher's PID.
-      # Two consecutive observations reject the common exec-then-immediate-failure race without
-      # inventing a locker-specific readiness protocol this generic module cannot provide.
-      attempt=0
-      while [ "$attempt" -lt 100 ]; do
-        if locker_is_running; then
-          ${sleep} 0.05
-          if locker_is_running; then
-            exit 0
+          # A foreground command has no completion handshake. Require two consecutive sightings of
+          # the configured executable on this display, rejecting exec-then-immediate-failure.
+          attempt=0
+          while [ "$attempt" -lt 100 ]; do
+            if locker_is_running; then
+              ${sleep} 0.05
+              if locker_is_running; then
+                exit 0
+              fi
+            fi
+            attempt=$((attempt + 1))
+            ${sleep} 0.05
+          done
+
+          echo "nixdesktop: foreground locker ${lockerName} did not stay running on $WAYLAND_DISPLAY" >&2
+          if kill -0 "$launcher_pid" 2>/dev/null; then
+            kill "$launcher_pid" 2>/dev/null || true
           fi
-        fi
-        attempt=$((attempt + 1))
-        ${sleep} 0.05
-      done
+          wait "$launcher_pid" 2>/dev/null || true
+          exit 1
+        ''
+        else ''
+          ${lockerName} -f &
+          launcher_pid=$!
 
-      echo "nixdesktop: locker ${lockerName} did not stay running on $WAYLAND_DISPLAY" >&2
-      if kill -0 "$launcher_pid" 2>/dev/null; then
-        kill "$launcher_pid" 2>/dev/null || true
-      fi
-      wait "$launcher_pid" 2>/dev/null || true
-      exit 1
+          # The configured command promises that this launcher exits zero only after its child has
+          # acquired the session lock. Wait for that exact handshake; observing either the parent
+          # or child is not readiness. Bound a broken implementation so it cannot leave the user
+          # manager in `starting` forever.
+          attempt=0
+          while kill -0 "$launcher_pid" 2>/dev/null; do
+            if [ "$attempt" -ge 100 ]; then
+              echo "nixdesktop: daemonizing locker ${lockerName} did not complete its readiness handshake on $WAYLAND_DISPLAY" >&2
+              kill "$launcher_pid" 2>/dev/null || true
+              wait "$launcher_pid" 2>/dev/null || true
+              exit 1
+            fi
+            attempt=$((attempt + 1))
+            ${sleep} 0.05
+          done
+
+          launcher_status=0
+          wait "$launcher_pid" || launcher_status=$?
+          if [ "$launcher_status" -ne 0 ]; then
+            echo "nixdesktop: daemonizing locker ${lockerName} failed its readiness handshake on $WAYLAND_DISPLAY (status=$launcher_status)" >&2
+            exit 1
+          fi
+          if ! locker_is_running; then
+            echo "nixdesktop: daemonizing locker ${lockerName} reported readiness without a surviving child on $WAYLAND_DISPLAY" >&2
+            exit 1
+          fi
+          exit 0
+        ''
+      }
     '';
 
   # ── The keyring PROVIDER, assembled HERE ───────────────────────────────────────────────────
@@ -675,10 +711,10 @@ let
     # idle" is a legitimate configuration (see the option's own doc), and tying this to the idle
     # daemon's existence would silently drop the only gate such a session has.
     #
-    # Type=oneshot + RemainAfterExit is the session-lifetime latch. The wrapper backgrounds a new
-    # locker, returns only after its exact executable is stable on this display, and then remains
-    # active even after the human unlocks. PartOf=graphical-session.target clears the latch at
-    # session teardown (and kills a still-running locker child through the unit's cgroup).
+    # Type=oneshot + RemainAfterExit is the session-lifetime latch. The wrapper applies the
+    # configured command contract, returns only after that contract reports readiness, and then
+    # remains active even after the human unlocks. PartOf=graphical-session.target clears the
+    # latch at session teardown (and kills a still-running locker child through the unit's cgroup).
     // (lib.optionalAttrs (cfg.idleAndLock.enable && cfg.idleAndLock.lockAtStart) {
       "lock-at-start" = defaults {
         command = toString lockAtStartScript;
@@ -1650,6 +1686,24 @@ in
           Independent of `lockAfterSeconds`: this fires once at session start, the idle daemon
           handles everything after. Setting this with `lockAfterSeconds = null` is legitimate --
           "gate the start, never lock on idle" -- and creates no idle daemon.
+        '';
+      };
+
+      lockAtStartCommandMode = lib.mkOption {
+        type = lib.types.enum [ "foreground" "daemonizing" ];
+        default = "foreground";
+        description = ''
+          The process contract implemented by `lockCommand -f` when `lockAtStart` starts it.
+
+          `foreground` means that command remains as the lock-owning process; the startup wrapper
+          backgrounds it and accepts only a stable exact executable on this Wayland display. This
+          is swaylock's contract (`-f` means "show failed attempts", not daemonize).
+
+          `daemonizing` means the launched parent exits zero only after a surviving child has
+          acquired the compositor's session lock, and exits nonzero on failure. The wrapper waits
+          for that parent instead of treating its mere presence as readiness, then verifies the
+          child. This is nixlock >= 0.1.3's contract. Setting this mode for a command that merely
+          forks without a post-lock readiness handshake would make the gate dishonest.
         '';
       };
 

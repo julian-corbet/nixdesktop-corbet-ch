@@ -78,6 +78,13 @@ let
     lockAtStart = true;
     lockCommand = longLockerName;
   });
+  atStartDaemonizingLongLocker = sessionServices (merge {
+    lockAtStart = true;
+    lockCommand = longLockerName;
+    lockAtStartCommandMode = "daemonizing";
+  });
+  defaultLockAtStartCommandMode =
+    (sessionConfig (merge { lockAtStart = true; })).nixdesktop.session.idleAndLock.lockAtStartCommandMode;
   renderedAtStart = (sessionConfig (merge { lockAtStart = true; })).systemd.user.services."lock-at-start";
   realHome = home-manager.lib.homeManagerConfiguration {
     inherit pkgs;
@@ -192,6 +199,11 @@ let
       atStartOtherLocker."lock-at-start".command != atStart."lock-at-start".command;
     "lockAtStart gives long regex-like locker names their own wrapper" =
       atStartLongLocker."lock-at-start".command != atStart."lock-at-start".command;
+    "lockAtStart command contract defaults to foreground" =
+      defaultLockAtStartCommandMode == "foreground";
+    "lockAtStart command contract changes the wrapper" =
+      atStartDaemonizingLongLocker."lock-at-start".command
+      != atStartLongLocker."lock-at-start".command;
   };
 
   failed = lib.attrNames (lib.filterAttrs (_: passed: !passed) results);
@@ -206,7 +218,8 @@ then
     pkgs.runCommand "nixdesktop-lock-at-start-idempotence"
     {
       nativeBuildInputs = [ pkgs.stdenv.cc pkgs.coreutils ];
-      lockCommand = atStartLongLocker."lock-at-start".command;
+      foregroundLockCommand = atStartLongLocker."lock-at-start".command;
+      daemonizingLockCommand = atStartDaemonizingLongLocker."lock-at-start".command;
       renderedUnit = realRenderedAtStart;
       inherit longLockerName nearRegexMatchName;
     } ''
@@ -229,21 +242,26 @@ then
         SYSTEMD_UNIT_PATH="${pkgs.systemd}/example/systemd/user" \
         ${lib.getExe' pkgs.systemd "systemd-analyze"} --user verify "$renderedUnit"
 
-      # The private wrapper itself carries every detector dependency as an absolute store path and
-      # compares the full executable basename/display literally around its background launch.
-      grep -F '${lib.getExe' pkgs.procps "pgrep"}' "$lockCommand"
-      grep -F '${lib.getExe' pkgs.coreutils "readlink"}' "$lockCommand"
-      grep -F '${lib.getExe' pkgs.coreutils "sleep"}' "$lockCommand"
-      grep -F '${lib.getExe' pkgs.coreutils "tr"}' "$lockCommand"
-      grep -F '${lib.getExe pkgs.gnugrep}' "$lockCommand"
-      grep -F 'candidate_exe##*/' "$lockCommand"
-      grep -F 'WAYLAND_DISPLAY=$WAYLAND_DISPLAY' "$lockCommand"
-      grep -F "'swaylock[.*]-effects' -f &" "$lockCommand"
-      grep -F 'while [ "$attempt" -lt 100 ]' "$lockCommand"
+      # Both private wrappers carry every detector dependency as an absolute store path and compare
+      # the full executable basename/display literally. Their launch contracts must remain visibly
+      # different: foreground samples a stable process, daemonizing waits for launcher completion.
+      for command in "$foregroundLockCommand" "$daemonizingLockCommand"; do
+        grep -F '${lib.getExe' pkgs.procps "pgrep"}' "$command"
+        grep -F '${lib.getExe' pkgs.coreutils "readlink"}' "$command"
+        grep -F '${lib.getExe' pkgs.coreutils "sleep"}' "$command"
+        grep -F '${lib.getExe' pkgs.coreutils "tr"}' "$command"
+        grep -F '${lib.getExe pkgs.gnugrep}' "$command"
+        grep -F 'candidate_exe##*/' "$command"
+        grep -F 'WAYLAND_DISPLAY=$WAYLAND_DISPLAY' "$command"
+      done
+      grep -F "'swaylock[.*]-effects' -f &" "$foregroundLockCommand"
+      grep -F 'while [ "$attempt" -lt 100 ]' "$foregroundLockCommand"
+      grep -F 'while kill -0 "$launcher_pid"' "$daemonizingLockCommand"
+      grep -F 'wait "$launcher_pid" || launcher_status=$?' "$daemonizingLockCommand"
+      grep -F 'reported readiness without a surviving child' "$daemonizingLockCommand"
 
-      # One real ELF covers all process shapes: --hold is an existing locker; -f can stay in the
-      # foreground, really daemonize, or exit immediately. Markers contain the surviving PID so
-      # every spawned process is proved alive and then cleaned up explicitly.
+      # One real ELF covers both declared command contracts and their failures. Markers contain the
+      # launched/surviving PID so every spawned process is proved alive and cleaned up explicitly.
       $CC -x c -o "$TMPDIR/locker-elf" - <<'EOF'
       #include <fcntl.h>
       #include <stdio.h>
@@ -263,15 +281,21 @@ then
         }
         if (argc == 2 && strcmp(argv[1], "-f") == 0) {
           const char *marker = getenv("SPAWN_MARKER");
+          const char *ready_marker = getenv("READY_MARKER");
           const char *mode = getenv("LOCKER_MODE");
           if (marker == NULL) return 20;
           if (mode != NULL && strcmp(mode, "daemonize") == 0) {
             pid_t pid = fork();
             if (pid < 0) return 24;
-            if (pid > 0) return 0;
+            if (pid > 0) {
+              usleep(300000);
+              if (ready_marker == NULL || write_marker(ready_marker) != 0) return 25;
+              return 0;
+            }
           }
           if (write_marker(marker) != 0) return 21;
-          if (mode != NULL && strcmp(mode, "exit") == 0) return 0;
+          if (mode != NULL && strcmp(mode, "success") == 0) return 0;
+          if (mode != NULL && strcmp(mode, "fail") == 0) return 42;
           for (;;) pause();
         }
         return 22;
@@ -303,31 +327,60 @@ then
       foreground_marker="$TMPDIR/foreground-spawned"
       PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-foreground SPAWN_MARKER="$foreground_marker" \
         LOCKER_MODE=foreground \
-        /bin/sh -c "$lockCommand"
+        /bin/sh -c "$foregroundLockCommand"
       wait_for_marker "$foreground_marker"
       foreground_pid=$(cat "$foreground_marker")
       kill -0 "$foreground_pid"
       spawned_pids="$spawned_pids $foreground_pid"
 
-      # A genuinely daemonizing launcher also works: readiness follows the surviving executable,
-      # not the short-lived launcher PID returned by the shell.
+      # A daemonizing command may create its same-executable child immediately, but the child is
+      # not ready until its parent completes the post-lock handshake. The delayed READY_MARKER is
+      # written by that parent immediately before exit; accepting process presence would return
+      # about 250ms too early and fail this assertion.
       daemon_marker="$TMPDIR/daemon-spawned"
+      daemon_ready_marker="$TMPDIR/daemon-ready"
       PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-daemon SPAWN_MARKER="$daemon_marker" \
-        LOCKER_MODE=daemonize \
-        /bin/sh -c "$lockCommand"
+        READY_MARKER="$daemon_ready_marker" LOCKER_MODE=daemonize \
+        /bin/sh -c "$daemonizingLockCommand"
+      test -s "$daemon_ready_marker"
       wait_for_marker "$daemon_marker"
       daemon_pid=$(cat "$daemon_marker")
       kill -0 "$daemon_pid"
       spawned_pids="$spawned_pids $daemon_pid"
 
-      # An exec that disappears immediately must not arm a false active-exited latch.
-      immediate_marker="$TMPDIR/immediate-exit"
+      # Successful launcher exit without a surviving same-display child is not readiness.
+      immediate_marker="$TMPDIR/immediate-success"
       if PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-exit SPAWN_MARKER="$immediate_marker" \
-        LOCKER_MODE=exit /bin/sh -c "$lockCommand"; then
-        echo "an immediately-exiting locker incorrectly satisfied readiness" >&2
+        LOCKER_MODE=success /bin/sh -c "$daemonizingLockCommand"; then
+        echo "a successful daemonizing launcher without a child incorrectly satisfied readiness" >&2
         exit 1
       fi
       test -e "$immediate_marker"
+
+      # A nonzero readiness parent must propagate failure even if its executable was observable
+      # during launch.
+      failure_marker="$TMPDIR/nonzero-failure"
+      if PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-fail SPAWN_MARKER="$failure_marker" \
+        LOCKER_MODE=fail /bin/sh -c "$daemonizingLockCommand"; then
+        echo "a nonzero daemonizing launcher incorrectly satisfied readiness" >&2
+        exit 1
+      fi
+      test -e "$failure_marker"
+
+      # A daemonizing contract that never completes is bounded and its launcher is killed. This
+      # deliberately costs the wrapper's five-second readiness ceiling once in CI.
+      timeout_marker="$TMPDIR/readiness-timeout"
+      if PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-timeout SPAWN_MARKER="$timeout_marker" \
+        LOCKER_MODE=foreground /bin/sh -c "$daemonizingLockCommand"; then
+        echo "a hung daemonizing launcher incorrectly satisfied readiness" >&2
+        exit 1
+      fi
+      wait_for_marker "$timeout_marker"
+      timeout_pid=$(cat "$timeout_marker")
+      if kill -0 "$timeout_pid" 2>/dev/null; then
+        echo "the timed-out daemonizing launcher survived wrapper cleanup" >&2
+        exit 1
+      fi
 
       # A real same-UID, same-display ELF whose basename is longer than comm's 15 bytes must be
       # detected without starting a duplicate. This is the concrete old-pgrep-x regression.
@@ -352,7 +405,7 @@ then
         exit 1
       fi
       PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-a SPAWN_MARKER="$same_display_marker" \
-        /bin/sh -c "$lockCommand"
+        /bin/sh -c "$foregroundLockCommand"
       test ! -e "$same_display_marker"
       kill -0 "$holder_pid"
 
@@ -360,7 +413,7 @@ then
       other_display_marker="$TMPDIR/other-display-spawned"
       PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-b SPAWN_MARKER="$other_display_marker" \
         LOCKER_MODE=foreground \
-        /bin/sh -c "$lockCommand"
+        /bin/sh -c "$foregroundLockCommand"
       wait_for_marker "$other_display_marker"
       other_display_pid=$(cat "$other_display_marker")
       kill -0 "$other_display_pid"
@@ -389,7 +442,7 @@ then
       test "$holder_ready" = true
       PATH="$TMPDIR:$PATH" WAYLAND_DISPLAY=wayland-c SPAWN_MARKER="$exact_name_marker" \
         LOCKER_MODE=foreground \
-        /bin/sh -c "$lockCommand"
+        /bin/sh -c "$foregroundLockCommand"
       wait_for_marker "$exact_name_marker"
       exact_name_pid=$(cat "$exact_name_marker")
       kill -0 "$exact_name_pid"
