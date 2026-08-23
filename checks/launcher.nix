@@ -545,6 +545,20 @@ let
     "a headless session's unit carries XDG_CURRENT_DESKTOP=scroll too -- the gap this closes is not seated-only" =
       lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll") remoteUnit.serviceConfig.Environment;
 
+    # One PATH must serve both planes. The NixOS profile entries are what let a compositor spawn
+    # declaratively installed helpers such as swaybg; the FHS entry is what keeps the same unit
+    # usable on system-manager/Arch. Checking the concrete user catches an accidental literal or
+    # a path derived from the wrong account.
+    "the seated PATH exposes both NixOS profiles and foreign-distro binaries" =
+      let
+        paths = lib.filter (e: lib.hasPrefix "PATH=" e) deskUnit.serviceConfig.Environment;
+        path = lib.head paths;
+      in
+      lib.length paths == 1
+      && lib.hasInfix "/run/current-system/sw/bin" path
+      && lib.hasInfix "/etc/profiles/per-user/alice/bin" path
+      && lib.hasInfix "/usr/bin" path;
+
     "a compositor with no built-in currentDesktop entry (niri) falls through to its own declared name" =
       lib.any (e: e == "XDG_CURRENT_DESKTOP=niri")
         niriNoVirtualOutputsCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment;
@@ -639,6 +653,10 @@ let
 
     "SM: the seated unit carries XDG_CURRENT_DESKTOP=scroll, identically to the NixOS plane" =
       lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll") deskUnitSm.serviceConfig.Environment;
+
+    "SM: the combined NixOS/FHS PATH renders identically to the NixOS plane" =
+      lib.filter (e: lib.hasPrefix "PATH=" e) deskUnitSm.serviceConfig.Environment
+      == lib.filter (e: lib.hasPrefix "PATH=" e) deskUnit.serviceConfig.Environment;
   };
 
   # ── LAYER FOUR: system-manager, A REAL `system-manager.lib.makeSystemConfig` ──────────────────

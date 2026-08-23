@@ -426,6 +426,21 @@ let
       entry = compositorEntry session.compositor;
       home = homeOf session.user;
 
+      # One path works on both supported planes. Missing directories are harmless: on NixOS the
+      # two profile entries expose system and home-manager packages, while on a foreign/FHS host
+      # the conventional directories expose distro packages. This must be one Environment=PATH
+      # value because systemd applies duplicate environment keys last-value-wins.
+      sessionPath = lib.concatStringsSep ":" [
+        "/run/current-system/sw/bin"
+        "/etc/profiles/per-user/${session.user}/bin"
+        "/usr/local/sbin"
+        "/usr/local/bin"
+        "/usr/sbin"
+        "/usr/bin"
+        "/sbin"
+        "/bin"
+      ];
+
       cardNames = cardNamePathsFor session.permittedDevices;
       envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardNames}" ]) entry.env;
 
@@ -503,16 +518,14 @@ let
           # first: the IPC action itself accepted the command, niri held real input+DRM device fds,
           # and `niri msg outputs` reported the real panels correctly).
           #
-          # The systemd COMPILE-TIME DEFAULT (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:
-          # /sbin:/bin`, `systemd.exec(5)` -- the identical list this file's header already cites
-          # for why a bare `ExecStart` cannot be trusted to resolve against a Nix profile) is the
-          # right value here for the opposite reason it was wrong there: every one of this session's
-          # actual spawn targets (fuzzel, foot, waybar's tray click-throughs, telegram-desktop,
-          # signal-desktop) is a real Arch/pacman package living under `/usr/bin` on this plane, not
-          # a Nix-store path this module could name without knowing which -- so the ONE list that
-          # was ALREADY correct before system-manager's own narrower default silently shadowed it is
-          # the one restored here, verbatim.
-          "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+          # The FHS half remains what foreign-distro sessions need. The NixOS half is equally
+          # load-bearing: `/run/current-system/sw/bin` exposes system packages and
+          # `/etc/profiles/per-user/<user>/bin` exposes home-manager packages when
+          # `useUserPackages` is enabled. Omitting those paths left a healthy NixOS scroll session
+          # unable to execute its own inherited bare `swaybg` command even though the package was
+          # declaratively installed. See `sessionPath` above for why the two planes are combined
+          # rather than selected with a distro branch.
+          "PATH=${sessionPath}"
         ]
         # THE VT FACT, both directions -- see this file's header. `session.vt` (modules/session.nix)
         # is `null` on every seat this estate has ever measured with no VT (the workstation); a
