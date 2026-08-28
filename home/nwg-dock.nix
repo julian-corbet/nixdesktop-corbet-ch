@@ -1,4 +1,4 @@
-# home/nwg-dock.nix — declarative nwg-dock config, sibling to home/nwg-bar.nix.
+# home/nwg-dock.nix — declarative nwg-dock config.
 #
 # nwg-dock is configured from three places at once, and only ONE of them is a config file. That is
 # the whole reason this module is more than a `style` option:

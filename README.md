@@ -98,7 +98,6 @@ that works with exactly one compositor.
 | `homeManagerModules.ironbar` | home-manager | bar config + style + helper scripts (GTK4 — renders at a fractional output's real scale, where GTK3 is downsampled from the next integer one) |
 | `homeManagerModules.swaync` | home-manager | notification daemon + control-centre config and style; the only one of the four that publishes an unread count a bar can read |
 | `homeManagerModules.swaylock` | home-manager | lock screen appearance |
-| `homeManagerModules.nwgBar` | home-manager | power menu |
 | `homeManagerModules.nwgDock` | home-manager | dock: CSS, replacement icons, and the rendered command line (nwg-dock configures most of itself through argv, not a file) |
 | `homeManagerModules.eww` | home-manager | widget toolkit scaffolding |
 | `homeManagerModules.foot` | home-manager | terminal config (font, geometry, scrollback, palette) — the config for the `terminal` role, never the terminal |

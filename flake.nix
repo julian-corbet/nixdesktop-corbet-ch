@@ -272,9 +272,8 @@
         swaync = ./home/swaync.nix;
 
         swaylock = ./home/swaylock.nix;
-        nwgBar = ./home/nwg-bar.nix;
 
-        # nwg-dock. Unlike nwgBar it models the COMMAND LINE too, because nwg-dock has no config
+        # nwg-dock models the COMMAND LINE too, because nwg-dock has no config
         # file for position, icon size, output, autohide or the launcher button -- every one of
         # those is an argv flag, so a hand-started dock is one whose configuration exists nowhere
         # but in its own argv and vanishes with the process. It also carries the icon-replacement
