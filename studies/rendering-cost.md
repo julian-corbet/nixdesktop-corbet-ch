@@ -64,7 +64,7 @@ Individual components, measured as a delta against a clean baseline:
 ## What this does and does not justify
 
 It justifies the defaults: `foot`, `fuzzel`, `waybar`, `mako`, `thunar` (GTK3) over `nautilus`
-(GTK4), `mate-polkit` (GTK3) over `polkit-kde-agent` (Qt6/QML).
+(GTK4), and Soteria with `GSK_RENDERER=cairo` over `polkit-kde-agent` (Qt6/QML).
 
 It does **not** justify treating GPU rendering as disqualifying. The right reading is that the
 cost is real, structural, and worth *knowing* — not that it is always unaffordable. On a machine

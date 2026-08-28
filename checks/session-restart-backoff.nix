@@ -127,6 +127,9 @@ let
     "...including the components that were dead on the measured session" =
       lib.all (n: wholeDesktop ? ${n})
         [ "bar" "notifications" "osd" "idle" "polkit-agent" "cliphist-text" "cliphist-image" ];
+    "the polkit agent alone receives GTK4's CPU-side Cairo renderer" =
+      lib.elem "GSK_RENDERER=cairo" wholeDesktop."polkit-agent".Service.Environment
+      && !(lib.elem "GSK_RENDERER=cairo" wholeDesktop.bar.Service.Environment);
     "...and a raw services.<name> entry, the generic mechanism the blocks compile down to" =
       hasBackoff wholeDesktop.custom;
     "a restart = \"no\" component still renders the start limit, which applies to manual starts too" =

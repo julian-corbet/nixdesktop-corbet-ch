@@ -37,7 +37,7 @@ in
   # Defaults survive when not overridden.
   defaultsHold =
     want.bar == "waybar"
-    && want.polkitAgent == "mate-polkit"
+    && want.polkitAgent == "soteria"
     && want.keyring == "gnome-keyring"
     && want.terminal == "foot";
 

@@ -4,7 +4,7 @@
 # other role here. This module installs nothing and names no package.
 #
 # WHY NO PACKAGES HERE. Package names are platform-specific (`pcmanfm-gtk3` on Arch,
-# `pkgs.pcmanfm` in nixpkgs) and so are binary paths (mate-polkit's agent lives somewhere
+# `pkgs.pcmanfm` in nixpkgs) and so are binary paths (a polkit agent can live somewhere
 # different on every distro). Worse, on NixOS some roles are not a package at all: gvfs and Thunar
 # only work through real NixOS options, so what a role RESOLVES TO differs in kind, not just in
 # spelling. A profile that emits package names is a profile that only works on one distro. So this
@@ -25,9 +25,9 @@
 #
 # Consequences worth naming, since they cut against the obvious pick in two cases:
 #   - fileManager defaults to thunar, not nautilus. Nautilus is GTK4; Thunar is GTK3+Cairo.
-#   - polkitAgent defaults to mate-polkit, not polkit-kde-agent. niri's own wiki suggests the
-#     latter, but it is Qt6+QML and drags a KDE Frameworks stack onto an otherwise-GTK box.
-#     mate-polkit is GTK3 and confirmed to work standalone outside its parent DE.
+#   - polkitAgent defaults to soteria, not polkit-kde-agent. Soteria is a maintained Rust/GTK4
+#     agent with no desktop-environment stack, and home/session.nix scopes GTK4's Cairo renderer
+#     to the agent so it remains CPU-rendered.
 # Both are plain options. A consumer who wants the heavier component sets it and moves on.
 { lib, config, ... }:
 let
@@ -102,8 +102,8 @@ in
     };
 
     polkitAgent = lib.mkOption {
-      type = lib.types.nullOr (lib.types.enum [ "mate-polkit" "polkit-kde-agent" "lxqt-policykit" ]);
-      default = "mate-polkit";
+      type = lib.types.nullOr (lib.types.enum [ "soteria" "polkit-kde-agent" "lxqt-policykit" ]);
+      default = "soteria";
       description = ''
         Polkit authentication agent, or null for none. Without one, any privileged GUI prompt
         (udisks, NetworkManager, a GUI sudo) fails **silently** — there is no error, the dialog

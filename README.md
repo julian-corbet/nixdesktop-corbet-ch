@@ -59,7 +59,7 @@ nixdesktop (policy + shared components)       ─┘            │
 ```
 
 The reason for the indirection is that package names are not portable (`pcmanfm-gtk3` on Arch,
-`pkgs.pcmanfm` in nixpkgs) and binary paths are worse — mate-polkit's agent lives somewhere
+`pkgs.pcmanfm` in nixpkgs) and binary paths are worse — polkit agents live somewhere
 different on nearly every distribution. And, as above, some roles are not a package on every
 platform at all. A profile that emits package names is a profile that works on exactly one
 distro — and one compositor's config module hardcoded into the policy layer would be a profile
@@ -80,7 +80,7 @@ that works with exactly one compositor.
     enable = true;
     compositor = "niri";      # or "scroll" — must match whatever the compositor repo expects
     fileManager = "thunar";
-    polkitAgent = "mate-polkit";
+    polkitAgent = "soteria";
   };
   nixdesktop.nixosBackend.enable = true;
 }
@@ -136,8 +136,8 @@ holds regardless of which compositor fills the `compositor` role.
 Two defaults cut against the obvious pick as a result:
 
 - **`fileManager = "thunar"`**, not nautilus — Thunar is GTK3, Nautilus is GTK4.
-- **`polkitAgent = "mate-polkit"`**, not polkit-kde-agent — niri's own wiki suggests the latter,
-  but it is Qt6/QML and drags a KDE Frameworks stack onto an otherwise-GTK box.
+- **`polkitAgent = "soteria"`**, not polkit-kde-agent — Soteria is a maintained Rust/GTK4 agent
+  with no desktop-environment stack, and its service uses `GSK_RENDERER=cairo` to stay CPU-side.
 
 Full method, numbers and the measurement trap that invalidated the first run:
 [`studies/rendering-cost.md`](studies/rendering-cost.md).

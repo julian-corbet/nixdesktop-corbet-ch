@@ -7,7 +7,7 @@
 # a user-layer module can never disagree about it even though they are separate evaluations.
 #
 # THIS FILE IS THE ONLY PLACE IN THE PROJECT THAT KNOWS NIXPKGS ATTRIBUTE PATHS for the desktop.
-# nixdesktop declares roles ("thunar", "mate-polkit") and never names a package; that split is the
+# nixdesktop declares roles ("thunar", "soteria") and never names a package; that split is the
 # whole point, and this file is the NixOS half of it (nixarch/lib/desktop-roles.nix is the Arch
 # half, same shape, pacman names instead of nixpkgs attrs).
 #
@@ -19,21 +19,19 @@
 #
 # NIXPKGS ATTR PATHS ARE NOT PACMAN NAMES. This is the entire reason the role indirection exists,
 # and it bites immediately: `thunar` is `pkgs.thunar` (top-level in current nixpkgs; older releases
-# nested it under `pkgs.xfce`), but `mate-polkit` is `pkgs.mate-polkit` while
+# nested it under `pkgs.xfce`), while
 # `polkit-kde-agent` is `pkgs.kdePackages.polkit-kde-agent-1` — no top-level alias, and the trailing
 # `-1` is part of the real attribute name, not a version pin. Verified against a live nixpkgs
 # evaluation while writing this file (`nix eval`/`nix build` against nixos-unstable), not guessed.
 #
 # POLKIT AGENT BINARY PATHS ARE STORE PATHS, NOT `/usr/lib/...`. nixarch's table hardcodes
-# absolute paths like `/usr/lib/mate-polkit/polkit-mate-authentication-agent-1` because that is
+# absolute paths like `/usr/lib/soteria-polkit/soteria` because that is
 # where Arch's packaging puts it, always, for every user. Nix has no equivalent fixed location —
 # the agent binary lives under the package's own store path, which is only known once the package
 # is. So every `command` below is built as a string interpolation of the package itself
-# (`"${pkg}/libexec/..."`), never a literal path. The subpath itself was confirmed by building each
+# (`"${pkg}/..."`), never a literal path. The subpath itself was confirmed by building each
 # package and listing its output (`nix build` + `find $out`) rather than assumed from the Arch
-# layout — mate-polkit in particular installs straight to `$out/libexec/`, with none of the
-# `mate-polkit/`-named subdirectory Arch's own packaging adds, so copying the Arch path across
-# platforms would have silently pointed at a directory that doesn't exist.
+# layout.
 { lib, pkgs, extraCompositors ? { } }:
 rec {
   # ── Roles whose implementation is a named choice ────────────────────────────────────────────
@@ -106,9 +104,9 @@ rec {
   ];
 
   polkitAgents = {
-    mate-polkit = {
-      packages = [ pkgs.mate-polkit ];
-      command = "${pkgs.mate-polkit}/libexec/polkit-mate-authentication-agent-1";
+    soteria = {
+      packages = [ pkgs.soteria ];
+      command = "${pkgs.soteria}/bin/soteria";
     };
     polkit-kde-agent = {
       # qt6ct rides along for the same reason nixarch's table carries it: this agent is the only
@@ -342,8 +340,8 @@ rec {
     #
     # Of the three that DO resolve, engrampa is the one this project's own constraint permits: ark
     # drags KDE Frameworks onto a GTK desktop, file-roller is GTK4 + libadwaita at the pinned
-    # version, engrampa is GTK3 — the same reasoning that makes mate-polkit the default polkit
-    # agent (see profiles/desktop.nix's header).
+    # version, engrampa is GTK3 — the same CPU-rendering constraint applied to Soteria via its
+    # scoped Cairo renderer (see profiles/desktop.nix's header).
     #
     # THE BACKENDS ARE NOT OPTIONAL EXTRAS, they are what makes the front-end able to do anything.
     # engrampa is a dispatcher: `src/fr-command-*.c` is one module per format, each exec'ing a

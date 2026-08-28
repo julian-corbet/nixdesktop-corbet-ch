@@ -732,7 +732,7 @@ let
     })
     // (lib.optionalAttrs cfg.polkitAgent.enable {
       "polkit-agent" = defaults {
-        inherit (cfg.polkitAgent) command;
+        inherit (cfg.polkitAgent) command environment;
         description = "Polkit authentication agent";
       };
     })
@@ -1753,7 +1753,7 @@ in
       enable = lib.mkEnableOption "a polkit authentication agent, run as a systemd user service";
       command = lib.mkOption {
         type = lib.types.str;
-        example = "/usr/lib/mate-polkit/polkit-mate-authentication-agent-1";
+        example = "/usr/lib/soteria-polkit/soteria";
         description = ''
           Polkit agent invocation -- realistically a full binary path, since every agent ships at
           a different location on every platform. A platform backend that resolves
@@ -1762,6 +1762,16 @@ in
           nixarch's Arch backend has the equivalent) -- wire it through from there rather than
           hand-typing it, the same way you would for `keyring.gnomeKeyring.command`/`keyring.oo7.
           command` below.
+        '';
+      };
+
+      environment = lib.mkOption {
+        type = lib.types.attrsOf lib.types.str;
+        default = { GSK_RENDERER = "cairo"; };
+        example = { GSK_RENDERER = "cairo"; };
+        description = ''
+          Environment scoped to the authentication-agent process. The default keeps GTK4 agents
+          such as Soteria on GTK's CPU-side Cairo renderer; non-GTK agents simply ignore it.
         '';
       };
     };

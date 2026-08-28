@@ -56,7 +56,7 @@ let
   installedPnames = pnamesOf eval.config.environment.systemPackages;
 
   # Every default role from profiles/desktop.nix, resolved. bar=waybar, notifications=mako,
-  # fileManager=thunar (+ its floor: tumbler, gvfs, thunar-volman), polkitAgent=mate-polkit,
+  # fileManager=thunar (+ its floor: tumbler, gvfs, thunar-volman), polkitAgent=soteria,
   # keyring=gnome-keyring, launcher=fuzzel, terminal=foot, osd=null (nothing),
   # screenshots/xwayland/clipboardHistory/idleAndLock=true, compositor=niri (this test's own
   # explicit pick, + brightnessctl, playerctl). portals=true does NOT appear here -- it is not a
@@ -68,7 +68,7 @@ let
     pkgs.tumbler
     pkgs.gvfs
     pkgs.thunar-volman
-    pkgs.mate-polkit
+    pkgs.soteria
     pkgs.gnome-keyring
     pkgs.fuzzel
     pkgs.foot
@@ -96,9 +96,9 @@ rec {
   # its store path, so equality with the expected string here doubles as proof of that, and the
   # negative check confirms no Arch-style path snuck in some other way.
   polkitCommandIsStorePath =
-    roles.polkitAgents.mate-polkit.command
-    == "${pkgs.mate-polkit}/libexec/polkit-mate-authentication-agent-1"
-    && !lib.hasPrefix "/usr/lib/" roles.polkitAgents.mate-polkit.command;
+    roles.polkitAgents.soteria.command
+    == "${pkgs.soteria}/bin/soteria"
+    && !lib.hasPrefix "/usr/lib/" roles.polkitAgents.soteria.command;
 
   # `portals = true` (the profile default) is handled explicitly through the real xdg.portal
   # option, not silently dropped and not smuggled into systemPackages.
