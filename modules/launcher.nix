@@ -441,6 +441,17 @@ let
         "/bin"
       ];
 
+      # `pam_systemd` adds the newly-created logind session id to the compositor process, but not
+      # to the already-running user manager. Some authentication agents (Soteria in particular)
+      # require that id as `XDG_SESSION_ID` even though they correctly run as user units outside
+      # the compositor's own session scope. Ask logind for this user's display session after PAM
+      # has opened it, then publish the dynamic id to the user manager before the graphical
+      # session target can start its components. Never guess or persist the boot-local number.
+      importSessionId =
+        "+/bin/sh -c 'session_id=\"$(${config.systemd.package}/bin/loginctl show-user \"${session.user}\" --property=Display --value)\"; "
+        + "if test -z \"$session_id\"; then echo \"nixdesktop: logind reports no display session for ${session.user}; XDG_SESSION_ID was not imported\" >&2; exit 0; fi; "
+        + "exec ${config.systemd.package}/bin/systemctl --machine=\"${session.user}@.host\" --user set-environment \"XDG_SESSION_ID=$session_id\"'";
+
       cardNames = cardNamePathsFor session.permittedDevices;
       envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardNames}" ]) entry.env;
 
@@ -638,8 +649,13 @@ let
       # through the same real nixpkgs systemd module tree NixOS does) is the one spelling that
       # resolves correctly regardless of which plane composed this module, rather than assuming
       # `/usr/bin/systemctl` exists (true on the Arch/system-manager plane, unverified on NixOS).
-      // lib.optionalAttrs entry.supportsNotify {
-        ExecStartPost = "+${config.systemd.package}/bin/systemctl --machine=\"${session.user}@.host\" --user start ${session.compositor}.service";
+      // {
+        # The session-id import runs for EVERY seated compositor. The second command is the niri
+        # readiness bridge described above and exists only where the compositor really supports
+        # sd_notify. Order is load-bearing: user components must inherit XDG_SESSION_ID before the
+        # bridge pulls graphical-session.target in.
+        ExecStartPost = [ importSessionId ] ++ lib.optional entry.supportsNotify
+          "+${config.systemd.package}/bin/systemctl --machine=\"${session.user}@.host\" --user start ${session.compositor}.service";
       };
     };
 

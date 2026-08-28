@@ -80,11 +80,9 @@ let
       # NixOS's masking surface -- `systemd.units.<name>.enable = false`. Declared here because
       # this module writes it for a VT-backed seated session (see `vtGettyMaskUnits`).
       systemd.units = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
-      # Read (never written) by `mkSeatedUnit`'s own `ExecStartPost=` bridge, and only for a
-      # `supportsNotify = true` compositor (niri, out of the box) -- see that option's own doc.
-      # Needed here so a lightweight fixture naming niri can force its rendered unit at all; every
-      # scroll fixture (`supportsNotify = false`) never touches this path regardless.
-      systemd.package = lib.mkOption { type = lib.types.package; default = pkgs.systemd; };
+      # Read (never written) by `mkSeatedUnit`'s `ExecStartPost=` session-id import on every seated
+      # compositor, and by the additional readiness bridge for a supportsNotify compositor.
+      systemd.package = lib.mkOption { type = lib.types.str; default = "/nix/store/fake-systemd"; };
       users.users = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
     };
   };
@@ -111,6 +109,7 @@ let
       # NixOS's `systemd.units.<name>.enable`. The two planes genuinely differ here, which is why
       # modules/launcher.nix emits one or the other rather than a single shared write.
       systemd.maskedUnits = lib.mkOption { type = lib.types.listOf lib.types.str; default = [ ]; };
+      systemd.package = lib.mkOption { type = lib.types.str; default = "/nix/store/fake-systemd"; };
       users.users = lib.mkOption { type = lib.types.attrsOf lib.types.anything; default = { }; };
       # DELIBERATELY NO `systemd.user.services` HERE -- see the comment above.
     };
@@ -570,6 +569,18 @@ let
     "the override does not also leave the built-in value sitting in the same unit" =
       !(lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll")
         currentDesktopOverrideCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment);
+
+    "every seated compositor imports logind's dynamic display-session id into the user manager" =
+      let post = deskUnit.serviceConfig.ExecStartPost; in
+      lib.length post == 1
+      && lib.hasInfix "loginctl show-user \"alice\" --property=Display --value" (lib.head post)
+      && lib.hasInfix "set-environment \"XDG_SESSION_ID=$session_id\"" (lib.head post);
+
+    "a notify compositor imports XDG_SESSION_ID before its graphical-session bridge starts" =
+      let post = niriNoVirtualOutputsCfg.systemd.services."nixdesktop-desk".serviceConfig.ExecStartPost; in
+      lib.length post == 2
+      && lib.hasInfix "set-environment" (lib.elemAt post 0)
+      && lib.hasInfix "start niri.service" (lib.elemAt post 1);
   };
 
   # ── LAYER THREE: system-manager, LIGHTWEIGHT `evalModules` ────────────────────────────────────
@@ -653,6 +664,9 @@ let
 
     "SM: the seated unit carries XDG_CURRENT_DESKTOP=scroll, identically to the NixOS plane" =
       lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll") deskUnitSm.serviceConfig.Environment;
+
+    "SM: the seated unit imports logind's display-session id identically to the NixOS plane" =
+      deskUnitSm.serviceConfig.ExecStartPost == deskUnit.serviceConfig.ExecStartPost;
 
     "SM: the combined NixOS/FHS PATH renders identically to the NixOS plane" =
       lib.filter (e: lib.hasPrefix "PATH=" e) deskUnitSm.serviceConfig.Environment
@@ -770,6 +784,11 @@ let
 
     "REAL SYSTEM-MANAGER: the rendered seated unit's Environment carries XDG_CURRENT_DESKTOP=scroll" =
       lib.hasInfix "XDG_CURRENT_DESKTOP=scroll\n" deskUnitTextSm;
+
+    "REAL SYSTEM-MANAGER: the rendered seated unit publishes XDG_SESSION_ID to the user manager" =
+      lib.hasInfix "loginctl show-user" deskUnitTextSm
+      && lib.hasInfix "set-environment" deskUnitTextSm
+      && lib.hasInfix "XDG_SESSION_ID=" deskUnitTextSm;
   };
 
   # ── LAYER TWO: A REAL `lib.nixosSystem`, THE ACTUAL systemd/users MODULES ─────────────────────
@@ -880,6 +899,11 @@ let
     # ── XDG_CURRENT_DESKTOP, AGAINST THE REAL RENDERED UNIT TEXT, BOTH DELIVERY CLASSES ─────────
     "REAL SYSTEM: the rendered seated unit's Environment carries XDG_CURRENT_DESKTOP=scroll" =
       lib.hasInfix "XDG_CURRENT_DESKTOP=scroll\n" deskUnitText;
+
+    "REAL SYSTEM: the rendered seated unit publishes XDG_SESSION_ID to the user manager" =
+      lib.hasInfix "loginctl show-user" deskUnitText
+      && lib.hasInfix "set-environment" deskUnitText
+      && lib.hasInfix "XDG_SESSION_ID=" deskUnitText;
 
     "REAL SYSTEM: the rendered headless unit's Environment carries XDG_CURRENT_DESKTOP=scroll too" =
       lib.hasInfix "XDG_CURRENT_DESKTOP=scroll\n" remoteUnitText;
