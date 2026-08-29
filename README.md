@@ -13,14 +13,16 @@ nothing.
 
 Three layers, deliberately separated, because they have different portability:
 
-**Compositor** (a sibling repo, not this one — [nixciri][nixciri] for ciri, nixscroll for scroll,
-...) — the compositor's own config: layout, binds, workspaces, and its own native startup
-mechanism. nixdesktop itself never needs to know which compositor a consumer picked.
+**Compositor integration** (a sibling repo, not this one — [nixciri][nixciri] for ciri,
+nixscroll for scroll, ...) — materializes the compositor runtime and companions, registers its
+launcher descriptor, and renders its own config: layout, binds, workspaces, and native startup
+mechanism.
 
 **Policy** (`profiles/desktop.nix`) — which roles a session wants filled, and by which
 implementation — compositor-neutral itself: `compositor` is a free-form string option, not a
 closed enum, so pairing this repo with a new compositor repo never requires editing this one.
-Emits a read-only `nixdesktop.want` attrset. Names no package and no binary path.
+Records that selection as a neutral host fact, but emits only shared component roles in the
+read-only `nixdesktop.want` attrset. Names no package and no binary path.
 
 **Shared config generation** (`home/*.nix`) — home-manager modules for the pieces every
 compositor session needs alike: bar config, notification daemon config, lock-screen appearance,
@@ -29,10 +31,11 @@ into ordered, restartable services instead of fragile spawn-at-startup lines. `h
 is the one deliberate seam between this layer and the compositor layer — see
 ["The startup contract"](#the-startup-contract) below.
 
-Neither the policy layer nor the shared-component layer installs software. That is a **platform
-backend's** job: it reads `nixdesktop.want` (including the `compositor` role) and turns it into a
-working desktop on its platform. [nixarch][nixarch] ships the Arch/CachyOS backend; this repo's
-own `nixosModules.backend` is the NixOS one.
+Neither the policy layer nor the shared-component layer installs software. A **platform backend**
+reads `nixdesktop.want` and materializes those shared roles. [nixarch][nixarch] ships the
+Arch/CachyOS backend; this repo's own `nixosModules.backend` is the NixOS one. The selected
+compositor is deliberately not one of those roles: its integration product materializes the
+runtime and the companions that are meaningful only with it.
 
 "A working desktop", not "a list of packages", because on NixOS those are not the same thing. A
 role whose implementation needs a real NixOS option gets that option — the NixOS backend sets
@@ -44,9 +47,9 @@ resolves at all, and brings neither fuse nor udisks2, so nothing mounts — not 
 Every one of those failures is silent. On Arch the same roles genuinely are just package names,
 which is why the two backends look so different for identical policy.
 
-**Layering, end to end:** a compositor repo (nixciri/nixscroll/...) and nixdesktop are siblings, both
-consumed by a hub (a real host config), which also picks a platform backend to turn nixdesktop's
-policy into installed packages:
+**Layering, end to end:** a compositor integration and nixdesktop are siblings, both consumed by
+a hub (a real host config). The integration owns its runtime; the platform backend turns only
+nixdesktop's shared role policy into installed packages:
 
 ```
 compositor repo (nixciri / nixscroll / ...)  ─┐
@@ -68,9 +71,7 @@ that works with exactly one compositor.
 # consumer (a hub), pairing nixdesktop with ciri via nixciri, on NixOS
 {
   imports = [
-    inputs.nixciri.homeManagerModules.default        # or inputs.nixscroll's equivalent
-    inputs.nixdesktop.homeManagerModules.session
-    inputs.nixdesktop.homeManagerModules.waybar
+    inputs.nixciri.nixosModules.ciri
     inputs.nixdesktop.nixosModules.desktop
     inputs.nixdesktop.nixosModules.backend
   ];
@@ -81,7 +82,11 @@ that works with exactly one compositor.
     fileManager = "thunar";
     polkitAgent = "soteria";
   };
+  programs.ciri.enable = true;
   nixdesktop.nixosBackend.enable = true;
+
+  # Home Manager separately imports nixciri.homeManagerModules.ciri and the
+  # desired nixdesktop shared-component modules.
 }
 ```
 
@@ -89,7 +94,7 @@ that works with exactly one compositor.
 
 | Module | Class | Owns |
 |---|---|---|
-| `desktop` | system-manager / NixOS | the role policy, including `compositor`; publishes `nixdesktop.want` |
+| `desktop` | system-manager / NixOS | shared role policy plus the selected compositor fact; publishes compositor-free `nixdesktop.want` |
 | `backend` | NixOS | resolves `nixdesktop.want` into `environment.systemPackages`, plus the real NixOS options a role needs to actually work (`xdg.portal`, `services.gvfs`, `programs.thunar`, `services.tumbler`, `services.keyd`); nixarch ships the Arch/CachyOS one |
 | `homeManagerModules.session` | home-manager | turns bar/notifier/osd/patchbay/idle/polkit/keyring into systemd user services |
 | `homeManagerModules.waybar` | home-manager | bar config + style (GTK3) |

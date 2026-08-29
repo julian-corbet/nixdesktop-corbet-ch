@@ -103,11 +103,10 @@
     in
     {
       # ── POLICY ────────────────────────────────────────────────────────────────────────────
-      # Compositor-neutral: declares which roles a desktop session wants filled — and, via the
-      # `compositor` option, which compositor is in use at all — and publishes the result as the
-      # read-only `nixdesktop.want` attrset. Installs nothing. A platform backend (nixarch's, for
-      # Arch/CachyOS, or this repo's own `nixosModules.backend`) reads `nixdesktop.want` and
-      # produces real packages.
+      # Compositor-neutral: declares which shared roles a desktop session wants filled and, via
+      # the `compositor` option, records which integration is selected. Only the shared roles are
+      # published in `nixdesktop.want`; the integration product owns its compositor package and
+      # descriptor. A platform backend reads `nixdesktop.want` and produces the shared packages.
       #
       # Exposed under both module classes because the two module systems that consume it differ
       # by host, and the profile itself is just options + a computed attrset — it touches
@@ -189,8 +188,8 @@
       # The NixOS half of the platform-backend split (nixarch ships the Arch/CachyOS half, in its
       # own repo — see modules/nixos-backend.nix's header for why this one, unlike that one, lives
       # here). Reads `nixdesktop.want` and resolves it into `environment.systemPackages` via
-      # lib/nixos-roles.nix, including any compositor a consumer supplies through the backend's
-      # own `extraCompositors` option (for a compositor with no nixpkgs package, e.g. scroll). Not
+      # lib/nixos-roles.nix. Compositor runtimes remain the responsibility of nixscroll, nixciri,
+      # or another integration product. Not
       # `.default`: a consumer must opt in explicitly, and `.default` stays the platform-neutral
       # policy profile above so importing it on a non-NixOS host (via `systemManagerModules.
       # default`) never drags a NixOS-only module along.

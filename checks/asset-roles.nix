@@ -54,20 +54,11 @@ let
     ];
   }).config;
 
-  # `compositor` has no default and is mandatory the moment the profile is enabled. Which one is
-  # irrelevant to every role here except `brightness` — see `plainDesktop` below.
+  # `compositor` has no default and is mandatory the moment the profile is enabled. It is session
+  # metadata only; a compositor integration owns the runtime package.
   desktopOn = compositor: extra:
     { nixdesktop.desktop = { enable = true; inherit compositor; } // extra; };
   desktop = desktopOn "niri";
-
-  # THE ONE FIXTURE THAT CANNOT BE ON niri, and the reason is the fact the brightness role is most
-  # likely to be misread as: niri's entry in lib/nixos-roles.nix's `compositors` table carries
-  # brightnessctl of its own, because niri's stock binds spawn it by name. On that compositor the
-  # setter is therefore present whether or not the role is filled, so a niri fixture can prove
-  # neither direction. `sway` resolves through the same table's plain fallthrough — one package,
-  # nothing bundled (its nixpkgs wrapper adds no brightness tool either; checked, not assumed) —
-  # which is what makes both directions visible at all.
-  plainDesktop = desktopOn "sway";
 
   typing = configFor (desktop { syntheticTyping = true; });
   automating = configFor (desktop { inputAutomation = true; });
@@ -76,10 +67,9 @@ let
   # positive case has to be a name THIS platform carries, which the one an Arch/CachyOS host really
   # sets deliberately is not (see the negative case below).
   wallpapered = configFor (desktop { wallpapers = [ "cosmic-wallpapers" ]; });
-  brightened = configFor (plainDesktop { brightness = "brightnessctl"; });
-  osdOnly = configFor (plainDesktop { osd = "swayosd"; });
+  brightened = configFor (desktop { brightness = "brightnessctl"; });
+  osdOnly = configFor (desktop { osd = "swayosd"; });
   unfilled = configFor (desktop { });
-  plainUnfilled = configFor (plainDesktop { });
   disabled = configFor { nixdesktop.desktop = { enable = false; compositor = "niri"; }; };
 
   # `pname`, not `name`: the version suffix is exactly the kind of detail that makes a prefix match
@@ -128,6 +118,10 @@ let
   foreignWallpapers = assetEval { wallpapers = [ "cachyos-wallpapers" ]; };
 
   results = {
+    "the selected compositor is metadata, never a platform package role" =
+      !(unfilled.nixdesktop.want ? compositor)
+      && !(has "niri" unfilled);
+
     # ── syntheticTyping ───────────────────────────────────────────────────────────────────────
     "syntheticTyping installs the Wayland typing client" =
       has "wtype" typing;
@@ -220,14 +214,6 @@ let
     "brightness = brightnessctl installs the backlight setter" =
       has "brightnessctl" brightened;
 
-    # THE OVERLAP THAT FORCES THE FIXTURES ABOVE ONTO ANOTHER COMPOSITOR, asserted instead of only
-    # explained: niri's entry in the `compositors` table carries brightnessctl itself, so on niri
-    # the role is invisible in both directions. If that bundle is ever dropped, this fails — and it
-    # should, because the reason those fixtures are on `sway` disappears with it, as does the
-    # working brightness key of every niri host that never filled this role.
-    "...though on a niri host the compositor entry supplies it anyway, role or no role" =
-      has "brightnessctl" unfilled;
-
     # THE SILENT FAILURE THE ROLE EXISTS FOR: an OSD is not a brightness tool, it spawns one. A
     # session with swayosd and no brightness role has working volume keys and dead brightness keys
     # and logs nothing about it. (On NixOS swayosd's own derivation wraps brightnessctl onto ITS OWN
@@ -237,7 +223,7 @@ let
       !(has "brightnessctl" osdOnly);
 
     "an unfilled brightness role installs no setter" =
-      !(has "brightnessctl" plainUnfilled);
+      !(has "brightnessctl" unfilled);
 
     # THE OPTION THIS ROLE MUST NOT GROW, the mirror image of `inputAutomation`'s assertion above.
     # nixpkgs REMOVED `hardware.brightnessctl` — the module that installed this package's udev

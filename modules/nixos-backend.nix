@@ -21,7 +21,7 @@
 { lib, config, pkgs, ... }:
 let
   cfg = config.nixdesktop.nixosBackend;
-  roles = import ../lib/nixos-roles.nix { inherit lib pkgs; extraCompositors = cfg.extraCompositors; };
+  roles = import ../lib/nixos-roles.nix { inherit lib pkgs; };
   want = config.nixdesktop.want or { };
   resolved = roles.packagesFor want;
 
@@ -52,19 +52,6 @@ in
       '';
     };
 
-    extraCompositors = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.listOf lib.types.package);
-      default = { };
-      example = lib.literalExpression ''{ scroll = [ nixscroll.packages.''${pkgs.system}.scroll ]; }'';
-      description = ''
-        Additional entries for `lib/nixos-roles.nix`'s `compositors` table, keyed by the same
-        string you set as `nixdesktop.desktop.compositor`. Needed for any compositor with no
-        nixpkgs package — scroll, for instance, has none, so a consumer supplies their own
-        derivation here (e.g. from nixscroll's own `packages` flake output) instead of editing
-        this repo. `"niri"` already resolves out of the box and needs no entry here, though an
-        entry for it here would still take precedence over the built-in one if you supplied one.
-      '';
-    };
   };
 
   config = lib.mkIf cfg.enable {

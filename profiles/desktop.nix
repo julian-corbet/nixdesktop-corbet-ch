@@ -1,7 +1,7 @@
 # profiles/desktop.nix — the POLICY layer of a desktop session: which roles the session wants
-# filled, and by which implementation. Compositor-neutral: the compositor itself is just another
-# role (`compositor`, a free-form string), resolved by a platform backend exactly like every
-# other role here. This module installs nothing and names no package.
+# filled, and by which implementation. Compositor-neutral: `compositor` is a free-form host fact,
+# not an installable role. The matching integration product owns the compositor runtime and
+# launcher descriptor. This module installs nothing and names no package.
 #
 # WHY NO PACKAGES HERE. Package names are platform-specific (`pcmanfm-gtk3` on Arch,
 # `pkgs.pcmanfm` in nixpkgs) and so are binary paths (a polkit agent can live somewhere
@@ -43,13 +43,12 @@ in
       example = "niri";
       description = ''
         Which compositor this session runs — `"niri"`, `"scroll"`, or any future name a sibling
-        compositor-module repo (nixniri, nixscroll, ...) introduces. Free-form rather than a
-        closed enum, deliberately: a new compositor must become usable by naming it here and
-        supplying it a package (`lib/nixos-roles.nix`'s `compositors` table on the NixOS side,
-        extensible via `modules/nixos-backend.nix`'s `extraCompositors` option for anything not
-        already in nixpkgs), never by editing this repo. No default — nixdesktop draws no
-        distinction between compositors and has no reason to prefer one, so the consumer must
-        say which one they mean.
+        compositor integration introduces. Free-form rather than a closed enum, deliberately:
+        nixdesktop records the compositor selected for this shared desktop policy, while the
+        matching integration product owns the compositor package, runtime services, and
+        descriptor. No default — nixdesktop draws no
+        distinction between compositors and has no reason to prefer one, so the consumer must say
+        which one they mean.
       '';
     };
 
@@ -109,9 +108,8 @@ in
         (udisks, NetworkManager, a GUI sudo) fails **silently** — there is no error, the dialog
         simply never appears, which is a genuinely hard failure to diagnose. Many Wayland
         compositors (niri among them) do not process XDG autostart, so the agent needs an
-        explicit spawn — that is the job of whichever compositor module you pair this profile
-        with (nixniri's own polkit wiring, for instance), not this profile's; the backend
-        supplies the platform's binary path for the role declared here.
+        explicit spawn — nixdesktop's neutral session-service layer owns that process, while the
+        backend supplies the platform's binary path for the role declared here.
 
         Known trap, not a bug in any agent: polkit refuses to register an agent from a session
         with no logind seat. A compositor started as a bare systemd `--user` unit has none, and
@@ -261,7 +259,7 @@ in
     clipboardHistory = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Clipboard history tooling (cliphist/wl-clipboard class), paired with a compositor module's own clipboard binds (e.g. nixniri's `niri.clipboardHistory`).";
+      description = "Clipboard history tooling (cliphist/wl-clipboard class), paired with the selected compositor integration's own clipboard binds.";
     };
 
     idleAndLock = lib.mkOption {
@@ -611,16 +609,15 @@ in
     readOnly = true;
     description = ''
       READ-ONLY, computed. The resolved role set a platform backend consumes to produce real
-      packages, including `compositor` itself (see that option above) — a backend never
-      hardcodes which compositor it's installing for. This is the entire contract between
-      nixdesktop and a backend — a backend that reads only this attrset needs no other knowledge
-      of this profile, and this profile needs none of the backend's package naming.
+      packages. The compositor is intentionally absent: its integration product owns that
+      runtime. This is the entire contract between nixdesktop and a backend — a backend that reads
+      only this attrset needs no other knowledge of this profile, and this profile needs none of
+      the backend's package naming.
     '';
   };
 
   config.nixdesktop.want = lib.optionalAttrs cfg.enable {
     inherit (cfg)
-      compositor
       bar
       notifications
       fileManager

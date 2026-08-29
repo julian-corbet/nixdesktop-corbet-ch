@@ -32,7 +32,7 @@
 # (`"${pkg}/..."`), never a literal path. The subpath itself was confirmed by building each
 # package and listing its output (`nix build` + `find $out`) rather than assumed from the Arch
 # layout.
-{ lib, pkgs, extraCompositors ? { } }:
+{ lib, pkgs }:
 rec {
   # ── Roles whose implementation is a named choice ────────────────────────────────────────────
 
@@ -211,13 +211,10 @@ rec {
   # grants to a session ACTIVE ON A SEAT and to nothing else. Wiring the rules back would hand a
   # group write access to every backlight on the machine to solve a problem that is not there.
   #
-  # ALREADY INSTALLED ON A niri HOST THAT NEVER FILLED THIS ROLE, which is the fact that makes this
-  # entry worth reading rather than assuming. The `compositors` table below carries brightnessctl
-  # inside niri's own entry, because niri's stock binds spawn it by name — so there, filling the
-  # role adds nothing (`lib.unique` in `packagesFor` makes the overlap free) and leaving it unfilled
-  # costs nothing either. Every other compositor resolves through that table's plain fallthrough
-  # with no such bundle, and that is where this role is the difference between working brightness
-  # keys and dead ones. checks/asset-roles.nix pins both halves so neither can drift silently.
+  # COMPOSITOR INTEGRATIONS DO NOT SUPPLY THIS ROLE. They own compositor-specific binds, but the
+  # neutral policy still has to state which setter those binds invoke. Otherwise one integration
+  # can accidentally mask an unfilled role while another exposes it as dead brightness keys.
+  # checks/asset-roles.nix pins both the filled and unfilled cases.
   #
   # AND `osds` IS NOT A SUBSTITUTE HERE, though on this platform it looks like one. swayosd's own
   # derivation wraps brightnessctl onto ITS PATH (`preFixup`, via `gappsWrapperArgs`), so an OSD
@@ -463,21 +460,6 @@ rec {
   # does not (what screen sharing actually needs on wlroots-adjacent stacks).
   portalPackages = [ pkgs.xdg-desktop-portal-gnome pkgs.xdg-desktop-portal-gtk ];
 
-  # The compositor plus what its own default keybinds shell out to. niri's stock media and
-  # brightness binds call these by name, so a compositor installed without them has keys that
-  # silently do nothing.
-  #
-  # EXTENSIBLE, NOT CLOSED. niri is the only compositor with a nixpkgs package today; scroll (a
-  # niri fork) has none, and future compositor-module repos won't necessarily either. Hardcoding
-  # scroll's derivation here would mean this file — and a new release of this repo — has to be
-  # edited every time a sibling compositor-module repo shows up, exactly the coupling the rest of
-  # this project avoids for every other role. `extraCompositors` (this file's own function
-  # argument, threaded in from `modules/nixos-backend.nix`'s identically-named option) is merged
-  # in on top instead, so a consumer pairs this backend with, say, nixscroll by supplying
-  # `{ scroll = [ nixscroll-flake.packages.${system}.scroll ]; }` — no edit to this file, no new
-  # release of this repo needed. niri needs no such entry; it already resolves out of the box.
-  compositors = { niri = [ pkgs.niri pkgs.brightnessctl pkgs.playerctl ]; } // extraCompositors;
-
   # ── Resolution ──────────────────────────────────────────────────────────────────────────────
 
   # Look a role value up in a table; fall through to `pkgs.${value}` as a top-level nixpkgs
@@ -500,8 +482,7 @@ rec {
   packagesFor = want:
     if want == { } then [ ] else
     lib.unique (
-      resolve compositors (want.compositor or null)
-      ++ resolve bars (want.bar or null)
+      resolve bars (want.bar or null)
       ++ resolve notificationDaemons (want.notifications or null)
       ++ resolve fileManagers (want.fileManager or null)
       ++ resolve polkitAgents (want.polkitAgent or null)

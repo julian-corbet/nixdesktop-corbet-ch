@@ -7,8 +7,8 @@ the experiment stay disposable (or delete it).
 
 | File | What |
 |---|---|
-| `eval-smoke-test.nix` | Confirms the policy profile evaluates and `nixdesktop.want` resolves as a backend expects, including `compositor` (no default; the consumer's own value must reach `want` unchanged). |
-| `eval-nixos-backend.nix` | Confirms `modules/nixos-backend.nix` evaluates alongside the profile and that the default `nixdesktop.want` resolves to real nixpkgs packages (not just role names), including the portals gap being handled through `xdg.portal` rather than dropped, and that a compositor with no nixpkgs package resolves via the backend's `extraCompositors` option with no edit to this repo. |
+| `eval-smoke-test.nix` | Confirms the policy profile evaluates and `nixdesktop.want` contains only platform-resolved roles; the selected compositor remains a host fact outside that attrset. |
+| `eval-nixos-backend.nix` | Confirms `modules/nixos-backend.nix` resolves the default `nixdesktop.want` to real nixpkgs packages, handles portals through `xdg.portal`, and never materializes the compositor owned by an integration product. |
 
 ## Open questions
 
@@ -23,7 +23,7 @@ Judgment calls that are reasoned but not measured. Each closes into a default in
   "proven adequate, not proven optimal"; still not worth churning without a concrete complaint.
 - **The two-evaluation seam is now a two-*repo* seam too.** Policy is evaluated by
   system-manager/NixOS; compositor config generation now lives in a sibling repo entirely
-  (nixniri, nixscroll, ...) rather than just a separate home-manager evaluation. Nothing about
+  (nixciri, nixscroll, ...) rather than just a separate home-manager evaluation. Nothing about
   idle/lock has to be wired across that seam any more: this repo owns the timeouts, the locker
   name and the swayidle assembly (`nixdesktop.session.idleAndLock`), and a compositor module reads
   `lockCommand` from it defensively for its own lock keybind. That replaced an arrangement where
@@ -35,10 +35,6 @@ Judgment calls that are reasoned but not measured. Each closes into a default in
   (`lib/nixos-roles.nix`'s `polkitAgents`/`keyrings`).
 - **`bar = "eww"` is under-served.** eww ships no bar, only primitives, so selecting it declares
   an intent the profile cannot fulfil alone. Possibly it should not be an enum value at all.
-- **The startup contract (`home/startup.nix`) has exactly one producer and zero confirmed
-  consumers yet.** `homeManagerModules.noctalia` writes to `nixdesktop.startup`; no compositor
-  module in this family has been confirmed to *read* it yet (nixniri's niri.nix, at the time of
-  writing, still only has its own `extraStartup` option, which is niri-specific and not this
-  contract). Until a compositor module reads `config.nixdesktop.startup`, noctalia's startup
-  command silently goes nowhere for a niri consumer — worth flagging rather than assuming solved
-  just because nixdesktop's side of the contract now exists.
+- **The startup contract (`home/startup.nix`) is consumed by both compositor integrations.**
+  `homeManagerModules.noctalia` writes to `nixdesktop.startup`; nixscroll and nixciri translate
+  those commands into their native startup syntax.

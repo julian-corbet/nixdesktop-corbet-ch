@@ -41,10 +41,11 @@ in
     && want.keyring == "gnome-keyring"
     && want.terminal == "foot";
 
-  # `compositor` reaches `want` unchanged -- it has no default of its own (unlike every other
-  # role here), so this is the one role whose presence in `want` proves the consumer's own value
-  # made it through rather than a baked-in literal.
-  compositorReachesWant = want.compositor == "niri";
+  # The compositor remains a neutral host fact but is not a package role. Its integration owns
+  # runtime materialization, so leaking it into `want` would make an old platform backend install
+  # a second compositor independently.
+  compositorStaysOutOfWant = !(want ? compositor)
+    && eval.config.nixdesktop.desktop.compositor == "niri";
 
   # Consumer overrides actually reach `want` -- the whole contract with a backend.
   overridesApply =
