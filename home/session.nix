@@ -2,10 +2,9 @@
 # daemon, a polkit agent, a keyring) into systemd user services, compositor-neutral itself and
 # sibling to the other home/*.nix modules in this repo.
 #
-# THE PROBLEM THIS REPLACES. A compositor's own config module (nixniri's home/niri.nix, say)
-# would otherwise emit `spawn-at-startup` / `spawn-sh-at-startup` lines into config.kdl for
-# exactly these components. Those run once, at compositor session start, and niri (the
-# compositor this was originally verified against) has no way to run them again later. This
+# THE PROBLEM THIS REPLACES. A compositor integration would otherwise emit one-shot startup
+# commands into its native configuration for exactly these components. Those run once, at
+# compositor session start, and cannot be replayed reliably after a configuration change. This
 # breaks in three concrete ways, all observed on a real running session:
 #
 #   1. niri live-reloads config.kdl on every change, so a `home-manager switch` updates binds and
@@ -132,7 +131,7 @@
 # renders a seated compositor as a SYSTEM unit (`PAMName=`/`User=` is the only way to a real
 # seat -- that module's own header) precisely BYPASSING the packaged `--user niri.service` this
 # section describes. Nothing else was ever going to start it or its target, so on a seated host
-# every component below sits dead for the whole session until `seatedNiriProxy` (below) closes
+# every component below sits dead for the whole session until `readinessBridge` (below) closes
 # that gap -- see its own header for the full mechanism, measured live 2026-08-02.
 #
 # LEAN BY DESIGN, same doctrine as the other home/*.nix modules: `services.<name>` is the
@@ -149,6 +148,7 @@
 { lib, config, pkgs, ... }:
 let
   cfg = config.nixdesktop.session;
+  readinessSocketVariable = "$" + cfg.readinessBridge.socketEnvironment;
 
   # ── The swayidle invocation, assembled HERE ────────────────────────────────────────────────
   #
@@ -542,7 +542,7 @@ let
       Requires = svc.requires;
       Before = svc.before;
       # Empty list renders no directive, same convention as every other list field here --
-      # `bindsTo`'s own option doc has the one consumer (`seatedNiriProxy`, below) and the full
+      # `bindsTo`'s own option doc has the one consumer (`readinessBridge`, below) and the full
       # reasoning for why `After=`/`Before=` ordering alone cannot express what this adds.
       BindsTo = svc.bindsTo;
     }
@@ -661,14 +661,11 @@ let
         restart = "always";
       };
     })
-    // (lib.optionalAttrs cfg.seatedNiriProxy.enable {
-      # See this option's own header comment, immediately above its declaration, for the full
-      # mechanism -- this is exactly the `services.<name>` generic escape hatch every other
-      # convenience block here compiles down to, never a different code path.
-      niri = defaults {
-        command = ''systemd-notify --ready && while [ -S "$NIRI_SOCKET" ]; do sleep 2; done'';
+    // (lib.optionalAttrs cfg.readinessBridge.enable {
+      "${cfg.readinessBridge.serviceName}" = defaults {
+        command = ''systemd-notify --ready && while [ -S "${readinessSocketVariable}" ]; do sleep 2; done'';
         runShell = true;
-        description = "Seated-session readiness bridge for niri.service (the real compositor runs as a system unit -- see this option's own header)";
+        description = "Seated-session readiness bridge for ${cfg.readinessBridge.serviceName}.service";
         serviceType = "notify";
         notifyAccess = "all";
         restart = "no";
@@ -1097,7 +1094,7 @@ in
               `"main"` access silently ignores -- proved live (`systemd-run --user` scratch-unit
               experiment, 2026-08-02): an otherwise identical unit, only `NotifyAccess=` changed,
               and the `"main"`-access version timed out waiting for a notification that had, in
-              fact, already arrived a second earlier. `seatedNiriProxy`, below, is the one
+              fact, already arrived a second earlier. `readinessBridge`, below, is the one
               consumer today.
             '';
           };
@@ -1187,7 +1184,7 @@ in
               for ever starts (`keyring.oo7.credential.bootstrap`, below, orders itself
               `Before = [ "keyring.service" ]` this way) -- `After=`/`Wants=` alone cannot express
               that direction, since those only ever say what THIS unit waits for, never what waits
-              for it. `seatedNiriProxy`, below, is a second consumer, for a different reason --
+              for it. `readinessBridge`, below, is a second consumer, for a different reason --
               see `bindsTo`'s own doc.
             '';
           };
@@ -1205,7 +1202,7 @@ in
               consumer of this file needs it: `graphical-session.target` already has
               `RefuseManualStart=yes` (a real, systemd-shipped unit, `man 7 systemd.special` --
               not this repo's own invention) precisely so it is only ever reached as a
-              dependency, never started directly. `seatedNiriProxy`, below, is the one component
+              dependency, never started directly. `readinessBridge`, below, is the one component
               here that FILLS that dependency role instead of depending on an already-running
               target -- see its own header for the full mechanism this field exists to support.
             '';
@@ -1329,7 +1326,8 @@ in
         default = "swayosd-server";
         description = ''
           OSD server command. Pairs with a compositor module's own `osd = "swayosd"`-style option
-          (nixniri's `niri.osd`, for instance), which binds the volume/brightness/mic-mute keys
+          (a compositor integration's OSD settings, for instance), which bind the
+          volume/brightness/mic-mute keys
           to swayosd-client -- the client has nothing to talk to until this server is running.
         '';
       };
@@ -1538,81 +1536,36 @@ in
       };
     };
 
-    # ── seatedNiriProxy: THE BRIDGE A SEATED SESSION NEEDS AND EVERY OTHER NIRI SESSION ALREADY
-    # HAS FOR FREE ──────────────────────────────────────────────────────────────────────────────
-    #
-    # THE GAP, MEASURED LIVE (the laptop and the workstation, 2026-08-02). Every component
-    # above -- bar, notifications, osd, patchbay, the ones below -- is ordered
-    # `After=graphical-session.target`, exactly per this file's own header ("THE ORDERING
-    # TARGET"): niri's PACKAGED `niri.service` (`BindsTo=graphical-session.target` +
-    # `Before=graphical-session.target` + `Type=notify` + `ExecStart=niri --session`) is what
-    # pulls that target in and holds it open until the compositor's own sd_notify(READY=1)
-    # arrives. That is true and unchanged for an ordinary niri session -- a login manager, or a
-    # plain `--user` invocation, starts `niri.service` directly and gets this for free.
-    #
-    # A SEATED session (`nixdesktop.sessions.<name>.delivery = "seated"`, nixdesktop.launcher's
-    # own domain) never runs that packaged unit at all: `sd_pid_get_session()` can only ever
-    # resolve a real seat from a SYSTEM unit's own cgroup (nixdesktop.launcher's header, "THE ONE
-    # FORCED FACT"), so the compositor runs as a SYSTEM unit instead, and nothing else was ever
-    # going to start `niri.service` or its target. Measured live: `graphical-session.target`
-    # sits `inactive (dead)` for the ENTIRE session, and therefore so does every component above
-    # -- an empty screen, a perfectly healthy compositor underneath it, with no bar, no
-    # notifications, no idle lock, and nothing anywhere naming why.
-    #
-    # THE FIX. nixdesktop.launcher's own `mkSeatedUnit` (modules/launcher.nix) now fires an
-    # `ExecStartPost=systemctl --user start "<compositor>.service"` at the exact moment the real,
-    # seated compositor reports genuine readiness (gated on
-    # `nixdesktop.launcher.compositors.<name>.supportsNotify` -- niri, verified, `true`; see that
-    # option's own doc for the measured fact). This convenience is what "<compositor>.service"
-    # resolves to for niri specifically: a `niri` entry in `nixdesktop.session.services` -- the
-    # SAME generic mechanism `bar`/`notifications`/etc use above, never a different code path --
-    # whose `command` is NOT a second real compositor invocation (that would be the exact
-    # double-DRM-master crash this estate lived through once already, `drm_setmaster_ioctl`
-    # returning -EBUSY the instant a second master opens the same device -- nixdesktop.launcher's
-    # own header, "SEATING IS CGROUP-STRUCTURAL") but a tiny shim that immediately confirms what
-    # its caller already proved (`systemd-notify --ready`), then supervises the real compositor's
-    # own Wayland socket (`$NIRI_SOCKET`, already present in this session's activation
-    # environment -- niri sets it itself, imported the identical way `$WAYLAND_DISPLAY` is) for
-    # the rest of the session, exiting the moment that socket disappears.
-    #
-    # `bindsTo`/`before` = `[ "graphical-session.target" ]` reproduce the packaged unit's own
-    # shape exactly (`BindsTo=` pulls the target in as an allowed dependency-start even though it
-    # has `RefuseManualStart=yes` -- proved live, `systemd-run --user` scratch-unit experiment,
-    # 2026-08-02); `partOf`/`after`/`wantedBy` are all emptied, because this unit FILLS the
-    # target's dependency role instead of depending on an already-running one, and nothing should
-    # ever pull it in automatically -- `mkSeatedUnit`'s own `ExecStartPost=` is the only intended
-    # caller. `serviceType = "notify"` + `notifyAccess = "all"` (see that option's own doc for
-    # the exact, measured reason `"all"` is required here: `systemd-notify` runs as a shell
-    # CHILD, not this unit's own MAINPID). `restart = "no"`: this shim bridges exactly ONE PAM
-    # session's readiness into the target; if the real seated compositor ever restarts, that is a
-    # FRESH PAM session with its own fresh `ExecStartPost=` -- restarting this unit in place
-    # instead of letting it exit cleanly (via the socket-disappearing check) and be started fresh
-    # would race that new call the moment it ever wins.
-    #
-    # graphical-session.target's own `StopWhenUnneeded = "yes"` (confirmed: a real,
-    # systemd-shipped unit, `/usr/lib/systemd/user/graphical-session.target` -- not this repo's
-    # own invention) is what completes the teardown direction: `BindsTo=` is asymmetric (proved
-    # live, the same scratch-unit experiment -- stopping the bound-FROM unit does NOT stop the
-    # target it names, only the reverse), so it is this shim EXITING (the socket-watch loop
-    # ending) that makes the target "unneeded", which then stops it, which then cascades via
-    # every component's own `PartOf=graphical-session.target` -- the identical crash-teardown
-    # behaviour a normal (non-seated) niri.service already gives every other consumer of this
-    # file for free.
-    #
-    # ONLY MEANINGFUL alongside a seated session on a `supportsNotify = true` compositor (niri,
-    # verified; scroll is not -- see nixdesktop.launcher.compositors.<name>.supportsNotify's own
-    # doc). This module is home-manager-only and compositor-neutral by design (this file's own
-    # header) and cannot see `nixdesktop.sessions.<name>.delivery` or `.compositor` at all to
-    # assert against directly -- enabling this on a non-seated host, or a seated one on a
-    # compositor without notify support, renders a `niri` unit that nothing ever starts (inert,
-    # not actively wrong: `mkSeatedUnit`'s `ExecStartPost=` is the only caller, and it is gated on
-    # the identical fact) rather than a build failure naming the mismatch.
-    seatedNiriProxy = {
+    # ── readinessBridge: a notify-capable seated compositor's user-session bridge ─────────────
+    # A seated compositor runs as a system unit, so its packaged user unit cannot pull in
+    # `graphical-session.target`. The launcher starts this thin user service only after a
+    # notify-capable compositor reports readiness. It immediately mirrors that readiness and
+    # remains alive while the integration-supplied IPC socket exists. `BindsTo=` and `Before=`
+    # give it the target-owning shape without launching a second compositor. The compositor
+    # integration owns both names because neither the service name nor socket variable is neutral.
+    readinessBridge = {
       enable = lib.mkEnableOption ''
-        a thin niri.service that bridges a SEATED session's real compositor into
-        graphical-session.target, so every component above actually starts -- see this option
-        group's own header for the full mechanism and why a seated session needs it at all.
+        a thin compositor readiness service that bridges a seated system unit into
+        graphical-session.target
       '';
+
+      serviceName = lib.mkOption {
+        type = lib.types.str;
+        example = "ciri";
+        description = ''
+          User-service name the seated launcher starts after the compositor reports readiness.
+          The compositor integration supplies this value.
+        '';
+      };
+
+      socketEnvironment = lib.mkOption {
+        type = lib.types.str;
+        example = "CIRI_SOCKET";
+        description = ''
+          Environment variable naming the compositor's IPC socket. The bridge remains alive
+          while that socket exists and exits when the seated compositor disappears.
+        '';
+      };
     };
 
     clipboardHistory = {
@@ -2208,6 +2161,16 @@ in
     # own header in the `let` block above for the mechanism and for the live failure that
     # introduced this.
     assertions = (map (f: { assertion = false; message = cycleMessage f; }) cycleFindings) ++ [
+      {
+        assertion = !cfg.readinessBridge.enable
+          || builtins.match "[a-z0-9][a-z0-9_-]*" cfg.readinessBridge.serviceName != null;
+        message = "nixdesktop.session.readinessBridge.serviceName must be a lowercase service slug";
+      }
+      {
+        assertion = !cfg.readinessBridge.enable
+          || builtins.match "[A-Z_][A-Z0-9_]*" cfg.readinessBridge.socketEnvironment != null;
+        message = "nixdesktop.session.readinessBridge.socketEnvironment must be an environment-variable name";
+      }
       # ── keyring provider assertions ────────────────────────────────────────────────────────
       {
         # Checked unconditionally, independent of `keyring.enable` -- see the keyring assembly's

@@ -308,87 +308,32 @@ let
       ++ map (p: "${p} rw") session.permittedDevicePaths;
   };
 
-  # ── The compositor exec table, and WHY built-in rows live OUTSIDE the option's own `config` ────
-  #
-  # A session names its compositor as a free-form string (modules/session.nix, mirroring
-  # profiles/desktop.nix's own `compositor` option) precisely so a new compositor never requires
-  # editing nixdesktop. This is the one place THIS module needs to know how to actually start one:
-  # its argv, which of ITS OWN env vars (if any) want the resolved device-path list, and the
-  # package (if any) its binary should be resolved against.
-  #
-  # `builtinCompositors` is a PLAIN Nix value, never assigned to `config.nixdesktop.launcher.
-  # compositors` at all (an earlier pass here tried exactly that, via `lib.mkOptionDefault`, on the
-  # assumption that a low-priority definition merges field-by-field against a consumer's own
-  # higher-priority one — checked live: it does NOT. NixOS's priority system picks the
-  # HIGHEST-priority definition(s) of an OPTION AS A WHOLE before the type's own merge function
-  # ever runs; for `attrsOf submodule` that means the instant a consumer defines EVEN ONE FIELD of
-  # ONE entry — `compositors.scroll.package = ...;`, the exact escape hatch `package`'s own doc
-  # recommends — the ENTIRE low-priority table is discarded, taking `niri`'s row and `scroll`'s
-  # OTHER fields down with it. Measured directly: a two-entry `mkOptionDefault` table, overridden
-  # on one field of one entry, comes back with the untouched entry GONE and the touched entry's
-  # other field back at the SUBMODULE's own bare default.) So the built-in rows are resolved by
-  # THIS FILE's OWN CODE instead, per field, in `compositorEntry` below — never through the module
-  # system's priority machinery, which cannot express "fall through per field" for this shape.
-  # `supportsVirtualOutputs` per row is a MEASURED fact about each compositor, not a placeholder:
-  #
-  #   scroll = true  -- scroll inherits sway's `wlr_backend_autocreate`, which unconditionally
-  #     wraps every backend selection in a `wlr_multi_backend` AND unconditionally attaches a
-  #     SECOND, headless backend alongside whichever primary one was selected (`sway/server.c`
-  #     `server_init()`, confirmed against the real dawsers/scroll source) -- seated or headless
-  #     alike. `create_output`'s own `sway_assert(wlr_backend_is_multi(server.backend))` therefore
-  #     never trips, and a virtual output is always reachable through that already-open backend.
-  #     See nixscroll's `home/scroll.nix` for the runtime-command translation this capability
-  #     backs, and its own comment for the exact numbering offset scroll's exact same startup path
-  #     forces on the result.
-  #
-  #   niri = false   -- niri 26.04 has NO virtual-output mechanism of any kind; upstream tracks it
-  #     as a design-stage feature (workstation-story design doc, established fact, not re-derived
-  #     here). There is no lever this repo -- or any translator sitting under it -- could pull, so
-  #     a session naming niri with `virtualOutputs != [ ]` must fail the build (see the assertion
-  #     below) rather than silently producing a session with no display and no error.
-  builtinCompositors = {
-    scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = null; supportsVirtualOutputs = true; supportsNotify = false; currentDesktop = "scroll"; };
-    niri = { command = "niri --session"; env = [ ]; package = null; supportsVirtualOutputs = false; supportsNotify = true; currentDesktop = null; };
-  };
+  # No compositor is built in. Integration products register their complete
+  # launch descriptor, so nixdesktop contains neither runtime-specific defaults
+  # nor a hidden compatibility path that survives removal of an integration.
+  declaredCompositorNames = lib.attrNames launcherCfg.compositors;
 
-  # Every name either table declares -- what "known" means for the assertion below. A name in
-  # NEITHER is unknown; a name in either (or both, a consumer legitimately restating a built-in
-  # entry) is known and gets resolved field-by-field.
-  declaredCompositorNames = lib.unique (lib.attrNames builtinCompositors ++ lib.attrNames launcherCfg.compositors);
-
-  # `null` on `command`/`env`/`package` (the submodule's own per-field default -- see the options
-  # below) UNAMBIGUOUSLY means "this definition did not set this field", which is exactly what
-  # lets a consumer override JUST `package` for a built-in entry (`compositors.scroll.package =
-  # pkgs.scroll;`) and still get `scroll`'s built-in `command`/`env` -- a consumer's own value for
-  # a field always wins over the built-in one; the built-in wins over the final `fallback` only
-  # when NEITHER side ever set that field. A name absent from both tables resolves to the same
-  # inert, empty shape ("", [], null) the assertion below reports on -- never a `null`/`throw`
-  # here, which would abort evaluation of `config.systemd.services` outright the moment anything
-  # forces it, before that nicer message ever has a chance to run. Same discipline modules/
-  # session.nix already uses for an unknown `environment`: degrade the derived value, assert on it
-  # separately.
   compositorEntry = name:
     let
-      builtin = builtinCompositors.${name} or null;
       user = launcherCfg.compositors.${name} or null;
       pick = field: fallback:
         if user != null && user.${field} != null then user.${field}
-        else if builtin != null && builtin.${field} != null then builtin.${field}
         else fallback;
     in
     {
       command = pick "command" "";
-      env = pick "env" [ ];
+      deviceEnvironment = pick "deviceEnvironment" [ ];
+      rendererEnvironment = pick "rendererEnvironment" { };
+      headlessEnvironment = pick "headlessEnvironment" { };
       package = pick "package" null;
+      supportsHeadless = pick "supportsHeadless" false;
       supportsVirtualOutputs = pick "supportsVirtualOutputs" false;
       supportsNotify = pick "supportsNotify" false;
-      # `name` ITSELF as the final fallback, not a literal "" -- see `currentDesktop`'s own option
-      # doc for why the compositor's own declared identifier is the honest default for any
-      # compositor this table has no more specific, measured entry for, and why that default is
-      # correct today for every compositor this repo ships a built-in row for at all (niri's row
-      # states `currentDesktop = null` explicitly, which is what routes it here).
       currentDesktop = pick "currentDesktop" name;
     };
+
+  rendererEnvironmentFor = entry: renderer:
+    entry.rendererEnvironment.${renderer} or { };
 
   # ── ExecStart MUST BE ABSOLUTE — systemd never consults $PATH for it ───────────────────────────
   #
@@ -406,10 +351,9 @@ let
 
   # `package` resolves the first word against `${package}/bin/<firstWord>` (`lib.getExe'`) — the
   # same shape nixscroll's own `programs.scroll.package` already uses, so a consumer who has a real
-  # compositor derivation (nixscroll's, nixniri's, an Arch-side one) wires it straight through this
+  # compositor derivation (nixscroll's, nixciri's, or an Arch-side one) wires it straight through this
   # option instead of re-deriving a store path by hand. nixdesktop itself takes no compositor as a
-  # flake input (see flake.nix's header), so neither built-in default entry below can supply one --
-  # a consumer sets `package`, or spells `command` as an already-absolute path themselves.
+  # flake input, so every integration supplies a package or an already-absolute command.
   resolvedExecFor = entry:
     let fw = firstWord entry.command; in
     if lib.hasPrefix "/" fw then entry.command
@@ -453,7 +397,8 @@ let
         + "exec ${config.systemd.package}/bin/systemctl --machine=\"${session.user}@.host\" --user set-environment \"XDG_SESSION_ID=$session_id\"'";
 
       cardNames = cardNamePathsFor session.permittedDevices;
-      envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardNames}" ]) entry.env;
+      envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardNames}" ]) entry.deviceEnvironment;
+      rendererEnvironment = rendererEnvironmentFor entry session.renderer;
 
       fence = deviceFenceFor session;
     in
@@ -515,7 +460,7 @@ let
           # systemd-minimal -- correct for THIS unit's own `ExecStart`, which this file's header
           # already establishes must be absolute and therefore never consults PATH at all -- but
           # wrong for anything the COMPOSITOR itself spawns as a bare name (config.kdl's `spawn
-          # "fuzzel"`/`spawn "foot"`, or nixniri's own `extraStartup` lines), because THAT resolution
+          # "fuzzel"`/`spawn "foot"`, or an integration's own startup lines), because THAT resolution
           # happens inside niri's own process, against ITS OWN inherited PATH, at IPC-action time --
           # not something this file's `resolvedExecFor`/`ExecStart` discipline touches at all.
           # systemd's own Environment= is last-value-wins per key, and this line renders after the
@@ -545,7 +490,7 @@ let
         # `CreateSession` with `org.varlink.service.InvalidParameter` on primary; SETTING it on a
         # VT-less seat would claim a VT that plainly does not exist there.
         ++ lib.optional (session.vt != null) "XDG_VTNR=${toString session.vt}"
-        ++ lib.optional (session.renderer != "auto") "WLR_RENDERER=${session.renderer}"
+        ++ lib.mapAttrsToList (k: v: "${k}=${v}") rendererEnvironment
         # See modules/session.nix's own `seatdVtBound` doc: `false` means this seat has no VT for a
         # VT-bound seatd to follow -- measured live on the workstation, whose `/dev/tty0` does not
         # exist at all (only `/dev/console`, a pty). Device access there rests entirely on
@@ -601,8 +546,8 @@ let
       # THE FIX. For `Type=notify` (`entry.supportsNotify`, above), `ExecStartPost=` runs only
       # once THIS unit's own readiness notification has genuinely arrived (`systemd.service(5)`)
       # -- so firing `systemctl --user start "<compositor>.service"` from here starts a THIN
-      # bridge unit (home/session.nix's `seatedNiriProxy` convenience renders exactly this shape
-      # for niri -- see its own header) at the identical moment the real compositor reports
+      # bridge unit (home/session.nix's `readinessBridge` renders exactly this shape) at the
+      # identical moment the real compositor reports
       # ready, never earlier. That bridge unit reproduces the packaged unit's own
       # `BindsTo=graphical-session.target` + `Before=graphical-session.target` + `Type=notify`
       # shape, immediately confirms what this ExecStartPost already knows, and supervises the
@@ -650,8 +595,8 @@ let
       # resolves correctly regardless of which plane composed this module, rather than assuming
       # `/usr/bin/systemctl` exists (true on the Arch/system-manager plane, unverified on NixOS).
       // {
-        # The session-id import runs for EVERY seated compositor. The second command is the niri
-        # readiness bridge described above and exists only where the compositor really supports
+        # The session-id import runs for EVERY seated compositor. The second command is the
+        # integration-owned readiness bridge and exists only where the compositor really supports
         # sd_notify. Order is load-bearing: user components must inherit XDG_SESSION_ID before the
         # bridge pulls graphical-session.target in.
         ExecStartPost = [ importSessionId ] ++ lib.optional entry.supportsNotify
@@ -673,6 +618,7 @@ let
   mkHeadlessUnit = name: session:
     let
       entry = compositorEntry session.compositor;
+      rendererEnvironment = rendererEnvironmentFor entry session.renderer;
     in
     {
       description = "nixdesktop headless session \"${name}\" (${session.compositor}, user ${session.user})";
@@ -697,14 +643,6 @@ let
         # NO User=, NO PAMName= -- see this file's header: those are precisely what a `--user` unit
         # cannot have and be seated by, and headless never wants a seat in the first place.
         Environment = [
-          "WLR_BACKENDS=headless"
-          # session.renderer, not a literal "pixman": modules/session.nix already ASSERTS every
-          # enabled headless session has renderer == "pixman" (wlroots' auto-selected renderer
-          # still opens a real render node even on the headless backend -- open_drm_render_node()
-          # scans the whole system -- so "auto" would silently reach the one card this session is
-          # forbidden). Reading it through rather than hardcoding keeps this one fact single-
-          # sourced at the option that owns it.
-          "WLR_RENDERER=${session.renderer}"
           # `%U`: a systemd unit-file specifier expanded by systemd itself when it parses this
           # Environment= line (never by a shell), to the UID of the user this manager instance
           # belongs to -- correct for every user this shared unit definition ever loads under,
@@ -715,7 +653,10 @@ let
           # or a portal-mediated one (an agent driving a browser has no seat, not no desktop
           # identity), so the gap this closes is not seated-only.
           "XDG_CURRENT_DESKTOP=${entry.currentDesktop}"
-        ] ++ lib.mapAttrsToList (k: v: "${k}=${v}") session.extraEnvironment;
+        ]
+        ++ lib.mapAttrsToList (k: v: "${k}=${v}") entry.headlessEnvironment
+        ++ lib.mapAttrsToList (k: v: "${k}=${v}") rendererEnvironment
+        ++ lib.mapAttrsToList (k: v: "${k}=${v}") session.extraEnvironment;
 
         # No device resolution needed at all: modules/session.nix already asserts a headless
         # session's permittedDevices claim is irrelevant to it (delivery = headless never takes a
@@ -837,20 +778,9 @@ in
             description = ''
               The package providing this compositor's binary. When set, the first word of
               `command` is resolved against it (`''${package}/bin/<firstWord>`, via
-              `lib.getExe'`) — the same shape nixscroll's own `programs.scroll.package` already
-              uses, so a consumer wires their real compositor derivation straight through here,
-              e.g. `nixdesktop.launcher.compositors.scroll.package = inputs.nixscroll.packages.
-              ''${pkgs.system}.scroll;` — leaving `command`/`env` untouched and still getting
-              `scroll`'s built-in values for both (see `compositorEntry`'s own comment for exactly
-              how that per-field fallback works, and why it is NOT expressed through this option's
-              own default at all).
-
-              `null` by default. nixdesktop itself takes no compositor as a flake input (see
-              flake.nix's header), so it has nothing to default this to for its own built-in
-              `scroll`/`niri` rows either. `command`'s first word must then already be an absolute
-              path — set it yourself, or set `package`. Leaving neither true for a compositor an
-              enabled session actually names is a build failure (see the assertion below), not a
-              unit that silently fails to exec.
+              `lib.getExe'`). nixdesktop has no compositor input or package default; the
+              integration product that declares this descriptor supplies the exact derivation.
+              If this is null, `command` must begin with an absolute path.
             '';
           };
 
@@ -870,32 +800,54 @@ in
               `Environment=PATH=...` on the unit changes nothing, because that resolution never
               consults the environment at all.
 
-              `null` by default — NOT `""` — so `compositorEntry` can tell "this definition never
-              set `command`" (fall through to a built-in row's own `command`, for `scroll`/`niri`)
-              apart from "this definition deliberately restated an empty string", which would
-              otherwise be indistinguishable and silently clobber a perfectly good built-in value.
+              `null` means the integration did not provide a command. An enabled session naming
+              that descriptor then fails evaluation.
             '';
           };
 
-          env = mkOption {
+          deviceEnvironment = mkOption {
             type = types.nullOr (types.listOf types.str);
             default = null;
             description = ''
-              Env var NAMES this compositor reads for device restriction (e.g.
-              `[ "WLR_DRM_DEVICES" ]` for a wlroots compositor). Each is set, on this session's own
-              unit (`Environment=`, in `serviceConfig`), to the SAME colon-joined, primary-first
-              list of resolved permitted-device `by-name` paths — CARD nodes only, never a render
-              node (see `cardNamePathsFor`'s own comment for why the two must never be mixed into
-              one list).
+              Environment-variable names that receive the colon-joined, primary-first list of
+              permitted DRM card paths. An empty list means device selection is translated into
+              the compositor's config by its integration product.
+            '';
+          };
 
-              `null` by default, for the SAME reason `command`'s default is `null` and not `[ ]`:
-              an explicit `env = [ ];` (a compositor that reads no device-restriction env var at
-              all — niri's own built-in row is exactly this, since its device denylist comes from
-              its generated CONFIG FILE instead, built from data this module never had access to:
-              nixdesktop reads only nixhost's device NAMES, never nixgpu's PCI identities, so it
-              cannot emit niri's own `debug { ignore-drm-device }` selectors itself — that
-              translation is nixniri's job) must stay distinguishable from "this definition never
-              touched `env` at all, fall through to the built-in row's own value".
+          rendererEnvironment = mkOption {
+            type = types.nullOr (types.attrsOf (types.attrsOf types.str));
+            default = null;
+            example = {
+              auto = { };
+              hardware = { };
+              software.WLR_RENDERER = "pixman";
+            };
+            description = ''
+              Mapping from nixdesktop's neutral renderer intents (`auto`, `hardware`, and
+              `software`) to this compositor's own environment variables. nixdesktop never
+              emits a wlroots, Smithay, EGL, Vulkan, or Pixman knob itself.
+            '';
+          };
+
+          headlessEnvironment = mkOption {
+            type = types.nullOr (types.attrsOf types.str);
+            default = null;
+            example.WLR_BACKENDS = "headless";
+            description = ''
+              Compositor-specific environment for a headless launch. Used only when
+              `supportsHeadless` is true; nixdesktop does not assume a wlroots backend.
+            '';
+          };
+
+          supportsHeadless = mkOption {
+            type = types.nullOr types.bool;
+            default = null;
+            example = true;
+            description = ''
+              Whether this compositor can run a session with no physical seat or output.
+              A headless session on an integration that does not declare this capability is a
+              build failure.
             '';
           };
 
@@ -906,22 +858,8 @@ in
             description = ''
               Whether this compositor can create an output that no physical panel backs, at
               runtime, for a session that declares `nixdesktop.sessions.<name>.virtualOutputs`.
-
-              `null` by default — NOT `false` — for the identical reason `command`'s default is
-              `null` and not `""` (see that option's own doc): `compositorEntry`'s per-field
-              fallback (a consumer's own value wins, the built-in row's wins only when NEITHER
-              side ever set the field) needs to tell "this definition never touched this field"
-              apart from "this definition deliberately restated `false`", and a bare `false`
-              default would make the two indistinguishable, silently discarding scroll's own
-              built-in `true` the moment a consumer set even one OTHER field of that entry.
-
-              `scroll` and `niri` already resolve out of the box (see `builtinCompositors`, above
-              this option in the source, for the measured fact behind each of their two values) --
-              a NEW compositor states its own capability here, the same way it states its own
-              `command`. A session naming a compositor that declares no support (the final
-              fallback, when neither a consumer nor a built-in row ever set this field, is
-              `false`) is a build failure the moment it also declares `virtualOutputs` -- see the
-              assertion below -- not a session with no display and no error saying why.
+              The integration product owns this measured capability. Null resolves to false, and
+              a session that asks for virtual outputs then fails evaluation.
             '';
           };
 
@@ -941,26 +879,8 @@ in
               `graphical-session.target`-ordered component (home/session.nix's bar,
               notifications, idle daemon, ...) dead for the whole session.
 
-              `null` by default, same "never touched" vs "deliberately false" distinction
-              `supportsVirtualOutputs` already documents for the identical reason -- a bare
-              `false` default would make the two indistinguishable and silently discard a
-              built-in row's own `true` the moment a consumer touched one other field.
-
-              MEASURED, per compositor, not assumed identical across the family (2026-08-02):
-              niri 26.04's own binary contains the real libsystemd sd_notify protocol strings
-              (`strings /usr/bin/niri`: READY=1, NOTIFY_SOCKET, RELOADING=1, STOPPING=1,
-              WATCHDOG=1) and its packaged `niri.service` genuinely ships `Type=notify` +
-              `BindsTo=graphical-session.target` + `Before=graphical-session.target` -- so
-              `niri`'s own row below is `true`. scroll's real binary (`sway-unwrapped`, the
-              package scroll is built from) was checked the identical way and shows NEITHER an
-              `sd_notify` symbol import nor any shipped `.service` unit at all, consistent with
-              its sway lineage (sway has never implemented this) -- so `scroll`'s row is `false`,
-              a measured fact, not a placeholder. A compositor with no entry here (the `null`
-              fallback resolves to `false` wherever `mkSeatedUnit` reads it) keeps the ORIGINAL
-              `Type = "simple"` behaviour unchanged, with the identical gap this field exists to
-              close on `niri` -- state `true` yourself once you have actually verified a new
-              compositor the same way, never on the assumption that "notify-capable" is the
-              common case.
+              The integration product owns this measured fact. Null resolves to false and keeps
+              the system unit on `Type=simple` without a readiness bridge.
             '';
           };
 
@@ -975,68 +895,12 @@ in
               `XDG_CURRENT_DESKTOP=<value>` line unconditionally -- there is no session this repo
               renders for which the variable is legitimately absent).
 
-              LEFT EMPTY BEFORE THIS OPTION EXISTED, AND THAT ALREADY COST REAL DATA. Electron's
-              `safeStorage` picks its secret-store backend by sniffing this variable at first run
-              and PERSISTS the choice in the app's own config; it cannot unseal its own key once
-              that backend later disappears. An empty variable does not merely mis-set a cosmetic
-              string -- it feeds Chromium's desktop-environment sniff (`base::nix::
-              GetDesktopEnvironment()`) nothing to recognise, and a session with nothing else
-              running to disambiguate can walk that same guesswork into a backend nobody chose on
-              purpose. `.desktop` `OnlyShowIn=`/`NotShowIn=` filtering and xdg-desktop-portal's own
-              backend selection read the identical variable, so the gap reaches well past Electron.
+              Electron secret storage, desktop-entry filtering, and portal selection all consume
+              this value, so the integration product must declare its measured desktop identity.
 
-              `null` by default -- the file-wide "did a definition actually touch this field"
-              discipline `command`/`package`/`supportsNotify` above already use, via `pick`, so a
-              consumer overriding one other field of a built-in row never silently loses this one.
-
-              THE VALUE ITSELF IS NOT "the compositor's name, dressed up" -- for `scroll`
-              specifically it is MEASURED, not guessed, and the measurement contradicts the more
-              obvious guess. `scroll` is a sway fork (`sway-unwrapped` is the real package it is
-              built from -- see `supportsNotify`'s own comment above), which makes "sway" the
-              tempting answer; it is also the WRONG one, checked live against the actual estate
-              (the Elitebook, 2026-08-04):
-
-                - xdg-desktop-portal's own binary contains the literal format string
-                  `%s-portals.conf`, filled in per colon-separated entry of `$XDG_CURRENT_DESKTOP`
-                  (`strings /usr/lib/xdg-desktop-portal` shows both that format string and a direct
-                  reference to `XDG_CURRENT_DESKTOP` in the same binary).
-                - the `sway-scroll` AUR package -- scroll's own upstream author's packaging, per
-                  hosts/elitebook/session.nix's own comment -- ships
-                  `/usr/share/xdg-desktop-portal/scroll-portals.conf` (`pacman -Ql sway-scroll`),
-                  a real `[preferred]` block picking the `wlr` ScreenCast/Screenshot implementation
-                  -- exactly the portal backend a wlroots compositor needs, and discoverable ONLY
-                  when an entry in `$XDG_CURRENT_DESKTOP` literally reads "scroll".
-                - there is no `sway-portals.conf` ANYWHERE on that same host (`find / -iname
-                  sway-portals.conf` -- nothing) and no `sway` package installed at all (`pacman -Qi
-                  sway` -- not installed). "sway" would have resolved to precisely the same nothing
-                  the empty variable already did, for the one file that exists to be found.
-                - nixscroll's own default startup config (`home/scroll.nix`) already assumes this
-                  variable arrives PRE-SET on the compositor's own process: `exec
-                  dbus-update-activation-environment --systemd ... XDG_CURRENT_DESKTOP ...` is one
-                  of its default `exec` lines, re-exporting whatever this unit hands the compositor
-                  into the D-Bus activation environment and the `--user` manager's own environment
-                  block -- which is how every OTHER session component (home/session.nix's bar,
-                  keyring, polkit agent, the portal daemons themselves, all separate `--user` units)
-                  ends up seeing it too. That line has been re-exporting an EMPTY value this whole
-                  time; this option is what finally gives it something real to carry.
-
-              So `builtinCompositors.scroll` states `currentDesktop = "scroll"` explicitly, a
-              measured fact keyed by scroll's own AUR-packaged portal config, not a placeholder that
-              happens to match the compositor's name. `builtinCompositors.niri` states `null`
-              deliberately, on the same "measured, not assumed" discipline `supportsNotify` already
-              applies per compositor: nothing in this repo has verified what niri itself expects
-              here the way scroll was just checked line-by-line against a real host, so it falls
-              through to the general default below rather than asserting a guess as a built-in fact.
-
-              THE GENERAL DEFAULT, for any compositor (niri included) with no entry here at all:
-              `compositorEntry`'s own `name` argument -- the exact string
-              `nixdesktop.sessions.<name>.compositor` was declared with. A compositor's own declared
-              identifier is the one honest thing this module already knows about it without
-              guessing, and it is what upstream convention already does for a standalone Wayland
-              compositor with no rebrand to hide behind (sway sets `sway`, Hyprland sets
-              `Hyprland`, niri sets `niri`) -- scroll is the one name in this table that had
-              actually drifted from that convention in the tempting direction, and only because it
-              is a fork wearing another project's skin underneath.
+              `null` falls back to the descriptor name. Integration products should normally set
+              the value explicitly whenever the runtime's desktop identity differs or has been
+              verified against a portal route.
 
               A SINGLE STRING, NEVER A LIST, even though `XDG_CURRENT_DESKTOP` is itself
               colon-separated and may carry several entries (the XDG Desktop Entry Specification's
@@ -1054,26 +918,23 @@ in
       });
       default = { };
       example = lib.literalExpression ''
-        { scroll = { command = "scroll"; env = [ "WLR_DRM_DEVICES" ]; package = nixscroll.packages.''${pkgs.system}.scroll; }; }
+        {
+          scroll = {
+            command = "scroll";
+            package = nixscroll.packages.''${pkgs.system}.scroll;
+            deviceEnvironment = [ "WLR_DRM_DEVICES" ];
+            rendererEnvironment.software.WLR_RENDERER = "pixman";
+            headlessEnvironment.WLR_BACKENDS = "headless";
+            supportsHeadless = true;
+          };
+        }
       '';
       description = ''
-        Per-compositor launch data: the argv to exec (whose first word must resolve to an
-        absolute path — see `command` and `package`), and which of the compositor's OWN env vars
-        (if any) want the resolved permitted-device path list. `scroll` and `niri` already resolve
-        out of the box (see `builtinCompositors`, above this option in the source — deliberately
-        NOT this option's own `default`); a NEW compositor is added by naming it here (or by
-        extending this option from a consumer's own config) and nothing else in this module --
-        every session referencing it is handled generically. A session naming a compositor neither
-        this table nor the built-in one declares, or one whose command cannot be resolved to an
-        absolute path, is a build failure (see the assertions below), not a silently-broken unit.
-
-        Overriding a SINGLE field of a built-in entry (`nixdesktop.launcher.compositors.scroll.
-        package = pkgs.scroll;`, say, leaving `command`/`env` untouched) resolves correctly
-        against that entry's built-in row — see `compositorEntry`'s own comment, in this module's
-        source, for exactly how, and for why that is NOT expressed as this option's own `default`.
-
-        SAME OPTION, SAME TABLE, ON BOTH PLANES -- this data is exec argv and env-var names, none
-        of it touches `systemd`/`users` at all, so it needs no plane branching.
+        Complete compositor launch descriptors supplied by integration products. nixdesktop has
+        no built-in rows: a session is usable only when its compositor integration declares the
+        exact package/command, device and renderer translations, headless and virtual-output
+        capabilities, readiness behavior, and desktop identity. The same table is consumed on the
+        NixOS and system-manager planes.
       '';
     };
 
@@ -1104,17 +965,13 @@ in
       # Checked here rather than left to the generated wrapper failing at runtime: the whole
       # session table is available at eval time, so a typo is a build failure naming every
       # offending session at once, not a unit that fails to start on whichever host happens to hit
-      # it first. Checked against `declaredCompositorNames` (built-in ∪ consumer-declared), never
-      # bare `launcherCfg.compositors` alone -- the built-in rows are not IN that option's own
-      # value at all (see `compositorEntry`'s own comment), so testing the option directly would
-      # make every session naming `scroll`/`niri` untouched by a consumer fail this check.
+      # it first. `declaredCompositorNames` comes only from integration-provided descriptors.
       lib.mapAttrsToList
         (name: s: {
           assertion = lib.elem s.compositor declaredCompositorNames;
           message = ''
             nixdesktop.sessions.${name} names compositor "${s.compositor}", which is neither one of
-            nixdesktop.launcher's built-in compositors nor declared in
-            nixdesktop.launcher.compositors. Declared:
+            declared in nixdesktop.launcher.compositors. Declared:
             ${lib.concatStringsSep ", " declaredCompositorNames}.
             Add an entry to nixdesktop.launcher.compositors.${s.compositor} (command + the env
             vars it reads for device restriction, if any) -- a new compositor becomes usable by
@@ -1144,6 +1001,35 @@ in
             '';
           })
         (lib.filterAttrs (_: s: lib.elem s.compositor declaredCompositorNames) enabledSessions)
+
+      # ── RENDERER INTENT MUST HAVE A COMPOSITOR TRANSLATION ────────────────────────────────
+      ++ lib.mapAttrsToList
+        (name: s: {
+          assertion = builtins.hasAttr s.renderer
+            (compositorEntry s.compositor).rendererEnvironment;
+          message = ''
+            nixdesktop.sessions.${name} selects renderer intent "${s.renderer}", but compositor
+            "${s.compositor}" does not declare a translation for it in
+            nixdesktop.launcher.compositors.${s.compositor}.rendererEnvironment. Renderer
+            implementation belongs to the compositor integration; nixdesktop will not guess a
+            wlroots, Smithay, EGL, Vulkan, or Pixman environment variable.
+          '';
+        })
+        (lib.filterAttrs (_: s: lib.elem s.compositor declaredCompositorNames) enabledSessions)
+
+      # ── HEADLESS IS A DECLARED COMPOSITOR CAPABILITY ───────────────────────────────────────
+      ++ lib.mapAttrsToList
+        (name: s: {
+          assertion = (compositorEntry s.compositor).supportsHeadless;
+          message = ''
+            nixdesktop.sessions.${name} is headless, but compositor "${s.compositor}" does not
+            declare supportsHeadless = true. The required launch mechanism is compositor-specific
+            and must come from its integration product.
+          '';
+        })
+        (lib.filterAttrs
+          (_: s: s.delivery == "headless" && lib.elem s.compositor declaredCompositorNames)
+          enabledSessions)
 
       # ── VIRTUAL OUTPUTS DECLARED ON A COMPOSITOR THAT CANNOT CREATE ONE ─────────────────────
       # Only for sessions naming a compositor the table above DOES declare -- same scoping as the

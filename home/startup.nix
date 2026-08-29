@@ -11,7 +11,7 @@
 # THE FIX. `nixdesktop.startup` is a plain list of raw shell-command strings, owned by nixdesktop
 # itself rather than by any one compositor module. Any nixdesktop module that wants a command to
 # run at session start (home/noctalia.nix today) appends to this list instead of reaching into a
-# compositor's own options. A compositor module (nixniri, nixscroll, ...) is expected to read
+# compositor's own options. A compositor module (nixciri, nixscroll, ...) is expected to read
 # `config.nixdesktop.startup` and wrap each entry in its own native startup syntax (niri's
 # `spawn-sh-at-startup "<command>"` form, scroll's equivalent, ...) -- nixdesktop deliberately
 # stores plain commands, not pre-wrapped compositor syntax, so the same list works unmodified

@@ -4,8 +4,8 @@ The desktop **policy** and **shared-component** layer for a declarative Wayland 
 roles a session wants filled (a bar, a file manager, a polkit agent, a notification daemon, ...),
 plus the home-manager modules for the pieces that are the same regardless of which compositor is
 running (a bar, a notifier, a lock screen, a systemd session-service layer). It does not ship a
-compositor itself: the compositor's own config comes from a sibling repo — [nixniri][nixniri] for
-niri, nixscroll for scroll, or any future compositor-module repo that speaks the same contract.
+compositor itself: the compositor's own config comes from a sibling repo — [nixciri][nixciri] for
+ciri, nixscroll for scroll, or any future compositor-module repo that speaks the same contract.
 Distro-agnostic and compositor-agnostic: it generates config and declares roles, and installs
 nothing.
 
@@ -13,10 +13,9 @@ nothing.
 
 Three layers, deliberately separated, because they have different portability:
 
-**Compositor** (a sibling repo, not this one — [nixniri][nixniri] for niri, nixscroll for scroll,
+**Compositor** (a sibling repo, not this one — [nixciri][nixciri] for ciri, nixscroll for scroll,
 ...) — the compositor's own config: layout, binds, workspaces, and its own native startup
-mechanism. This repo used to ship niri's config module (`home/niri.nix`); it has moved out to
-nixniri so nixdesktop itself never has to know which compositor a consumer picked.
+mechanism. nixdesktop itself never needs to know which compositor a consumer picked.
 
 **Policy** (`profiles/desktop.nix`) — which roles a session wants filled, and by which
 implementation — compositor-neutral itself: `compositor` is a free-form string option, not a
@@ -45,12 +44,12 @@ resolves at all, and brings neither fuse nor udisks2, so nothing mounts — not 
 Every one of those failures is silent. On Arch the same roles genuinely are just package names,
 which is why the two backends look so different for identical policy.
 
-**Layering, end to end:** a compositor repo (nixniri/nixscroll/...) and nixdesktop are siblings, both
+**Layering, end to end:** a compositor repo (nixciri/nixscroll/...) and nixdesktop are siblings, both
 consumed by a hub (a real host config), which also picks a platform backend to turn nixdesktop's
 policy into installed packages:
 
 ```
-compositor repo (nixniri / nixscroll / ...)  ─┐
+compositor repo (nixciri / nixscroll / ...)  ─┐
                                                 ├──▶ hub (a real host config)
 nixdesktop (policy + shared components)       ─┘            │
                                                               ▼
@@ -66,10 +65,10 @@ distro — and one compositor's config module hardcoded into the policy layer wo
 that works with exactly one compositor.
 
 ```nix
-# consumer (a hub), pairing nixdesktop with niri via nixniri, on NixOS
+# consumer (a hub), pairing nixdesktop with ciri via nixciri, on NixOS
 {
   imports = [
-    inputs.nixniri.homeManagerModules.default        # or inputs.nixscroll's equivalent
+    inputs.nixciri.homeManagerModules.default        # or inputs.nixscroll's equivalent
     inputs.nixdesktop.homeManagerModules.session
     inputs.nixdesktop.homeManagerModules.waybar
     inputs.nixdesktop.nixosModules.desktop
@@ -78,7 +77,7 @@ that works with exactly one compositor.
 
   nixdesktop.desktop = {
     enable = true;
-    compositor = "niri";      # or "scroll" — must match whatever the compositor repo expects
+    compositor = "ciri";      # or "scroll" — must match whatever the compositor repo expects
     fileManager = "thunar";
     polkitAgent = "soteria";
   };
@@ -105,8 +104,7 @@ that works with exactly one compositor.
 | `homeManagerModules.noctalia` | home-manager | supplement to noctalia's own upstream module (see below) |
 | `homeManagerModules.startup` | home-manager | the `nixdesktop.startup` contract — see below |
 
-There is no `homeManagerModules.default`. Before the niri module moved out to nixniri, `default`
-pointed at it, as "the module this project exists for." That framing no longer holds: every
+There is no `homeManagerModules.default`. That framing no longer holds: every
 module above is an independent, separately opt-in component, and none of them is the obvious
 thing every consumer wants — picking one anyway would misrepresent it as this repo's primary
 artifact. Import the ones you actually want by name.
@@ -119,7 +117,7 @@ compositor's own startup syntax, which is exactly the coupling this repo avoids.
 for a compositor module to depend on alone) is a plain list of raw shell-command strings that any
 nixdesktop module can append to when it needs something running at session start —
 `homeManagerModules.noctalia` is the one example today. A compositor module is expected to read
-`config.nixdesktop.startup` and wrap each entry in its own native startup syntax (niri's
+`config.nixdesktop.startup` and wrap each entry in its own native startup syntax (ciri's
 `spawn-sh-at-startup "<command>"` form, scroll's equivalent, ...). nixdesktop never assumes which
 syntax that is; the list holds plain commands so the same list works unmodified no matter which
 compositor module ends up consuming it.
@@ -148,7 +146,7 @@ and worth knowing. Every one of these is a plain option so the trade stays yours
 
 - **A missing polkit agent fails silently.** Many Wayland compositors (niri among them) do not
   process XDG autostart, so an agent needs an explicit spawn — that is the compositor module's
-  job (nixniri's own polkit wiring, for instance), not nixdesktop's; nixdesktop only declares the
+  job (nixciri's own polkit wiring, for instance), not nixdesktop's; nixdesktop only declares the
   `polkitAgent` role, and a platform backend resolves it to a real binary path
   (`modules/nixos-backend.nix` via `lib/nixos-roles.nix`'s `polkitAgents.<name>.command`).
 - **Polkit refuses to register an agent from a seatless session.** A compositor started as a bare
@@ -184,14 +182,14 @@ imports = [ inputs.noctalia.homeModules.default inputs.nixdesktop.homeManagerMod
 
 Early. Originally extracted from [nixarch][nixarch], where these modules grew before this repo
 split off — nixarch's remit is making an Arch box Nix-manageable, and a Wayland desktop is a
-different domain that happens to have started life there. The niri-specific piece that lived here
-(`home/niri.nix`) has itself since moved out again, to [nixniri][nixniri], so nixdesktop could
-become genuinely compositor-neutral — usable by nixniri, nixscroll, or a compositor that doesn't
+different domain that happens to have started life there. Compositor-specific configuration lives
+in [nixciri][nixciri] or nixscroll, so nixdesktop remains genuinely compositor-neutral — usable by
+nixciri, nixscroll, or a compositor that doesn't
 exist yet. The option surface will keep moving as the desktop does; there are no compatibility
 shims at this stage.
 
 [nixarch]: https://github.com/julian-corbet/nixarch-corbet-ch
-[nixniri]: https://github.com/julian-corbet/nixniri-corbet-ch
+[nixciri]: https://github.com/julian-corbet/nixciri-corbet-ch
 
 ## License
 

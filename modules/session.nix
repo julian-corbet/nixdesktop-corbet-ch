@@ -68,7 +68,7 @@
 # the forbidden RX 6800 being opened by the one session forbidden to touch it.
 #
 # ⚠ Both niri keys live under `debug`, which niri's own documentation explicitly excludes from its
-# config stability policy. That volatility belongs to nixniri's translator, which must pin itself
+# config stability policy. That volatility belongs to nixciri's translator, which must pin itself
 # to a niri version; this module's vocabulary is version-independent by construction because it
 # emits device NAMES and no syntax at all.
 { probeFact, collectProbes }:
@@ -172,7 +172,7 @@ let
         description = ''
           Which compositor runs this session -- the same free-form vocabulary as
           `nixdesktop.desktop.compositor`, resolved by whichever sibling compositor-module repo
-          (nixniri, nixscroll, ...) is composed alongside. Free-form rather than an enum for the
+          (nixciri, nixscroll, ...) is composed alongside. Free-form rather than an enum for the
           same reason it is there: a new compositor must become usable by naming it, never by
           editing this repo.
 
@@ -414,26 +414,28 @@ let
       };
 
       renderer = mkOption {
-        type = types.enum [ "auto" "gl" "vulkan" "pixman" ];
+        type = types.enum [ "auto" "hardware" "software" ];
         default = "auto";
         description = ''
-          Which renderer the compositor should use. `"pixman"` is CPU-only and is the only value
-          that touches no GPU AT ALL -- which is not a performance note but a containment one.
+          Compositor-neutral renderer intent. `"auto"` leaves selection to the compositor,
+          `"hardware"` requests acceleration, and `"software"` requires a CPU implementation.
+          The compositor integration translates that intent into its own mechanism; this module
+          never emits renderer environment variables.
 
           ⚠ HEADLESS DOES NOT MEAN "NO GPU TOUCHED", and this is the trap the assertion below
           exists for. wlroots' headless BACKEND opens no DRM device, but the auto-selected
           RENDERER still calls `open_drm_render_node()` and scans the WHOLE system for one. On a
           host whose only render node belongs to a card this session is forbidden to touch, "auto"
-          finds exactly that card. So `delivery = "headless"` requires `"pixman"`, asserted, not
-          recommended.
+          finds exactly that card. So `delivery = "headless"` requires `"software"`, asserted,
+          not recommended.
 
           For a seated session the value is a capability question: `"auto"` is right on a card
-          with a render node, and `"pixman"` is right on one without -- evdi's `drm_driver` never
+          with a render node, and `"software"` is right on one without -- evdi's `drm_driver` never
           sets `DRIVER_RENDER`, so an evdi device can NEVER have a render node; that is a
           compile-time property of the driver, true on every host, not a configuration.
 
           ⚠ A SEATED SESSION THAT ALSO DECLARES `virtualOutputs` DOES NOT REOPEN THIS TRAP, AND
-          MUST NOT BE FORCED TO `"pixman"` ON THAT ACCOUNT -- a temptation worth naming explicitly
+          MUST NOT BE FORCED TO `"software"` ON THAT ACCOUNT -- a temptation worth naming explicitly
           so nobody "fixes" this later by widening the headless-only assertion below. The renderer
           is a property of the COMPOSITOR PROCESS, shared by every output it drives, physical or
           virtual: a wlroots-multi-backend compositor (scroll) already attaches a secondary
@@ -441,8 +443,8 @@ let
           alike (see nixscroll's own `home/scroll.nix` for the measured source citation), so a
           virtual output on a seated session rides the SAME renderer this option already resolved
           for that session's real device -- `"auto"` where that device has a render node,
-          `"pixman"` where it does not, exactly as the paragraph above already states. There is no
-          second renderer to get wrong per output, and forcing pixman here unconditionally would
+          `"software"` where it does not, exactly as the paragraph above already states. There is no
+          second renderer to get wrong per output, and forcing software here unconditionally would
           needlessly discard GPU-accelerated rendering for the WHOLE session, virtual output and
           real one alike, on a card that has a perfectly good render node.
         '';
@@ -577,7 +579,7 @@ in
           delivery = "seated";
           environment = "primary";
           layout = "console";
-          renderer = "pixman";
+          renderer = "software";
           vt = 1; # primary owns VT 1 on the server -- a VT-backed seat, unlike the workstation's.
         };
         # Its headless sibling -- the browser leg -- on no seat and no device at all.
@@ -585,7 +587,7 @@ in
           compositor = "scroll";
           user = "alice";
           delivery = "headless";
-          renderer = "pixman";
+          renderer = "software";
         };
       }
     '';
@@ -598,17 +600,17 @@ in
   };
 
   config.assertions =
-    # ── HEADLESS => PIXMAN ────────────────────────────────────────────────────────────────────
+    # ── HEADLESS => SOFTWARE ──────────────────────────────────────────────────────────────────
     lib.mapAttrsToList
       (name: s: {
-        assertion = s.renderer == "pixman";
+        assertion = s.renderer == "software";
         message = ''
           nixdesktop.sessions.${name} is headless but sets `renderer = "${s.renderer}"`. Headless
           does not mean "no GPU touched": wlroots' headless BACKEND opens no DRM device, but the
           auto-selected RENDERER still calls `open_drm_render_node()` and scans the entire system
           for one -- so on a host whose only render node belongs to a card this session is
-          forbidden to touch, that is exactly the card it opens. `renderer = "pixman"` is the only
-          value that makes a headless session genuinely zero-GPU.
+          forbidden to touch, that is exactly the card it opens. `renderer = "software"` is the
+          only neutral intent that requires a zero-GPU renderer.
         '';
       })
       (lib.filterAttrs (_: s: s.delivery == "headless") enabledSessions)

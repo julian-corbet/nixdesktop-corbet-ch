@@ -5,7 +5,7 @@
   # declares roles and declares identity/geometry, and all of that is pure Nix.
   #
   # NOT EVEN THE COMPOSITOR ITSELF IS AN INPUT. A compositor's own config module lives in its own
-  # sibling repo (nixniri for niri, nixscroll for scroll, or any future compositor repo that speaks
+  # sibling repo (nixciri for ciri, nixscroll for scroll, or any future compositor repo that speaks
   # the same `nixdesktop.want` and `nixdisplay.{monitors,layouts}` contracts), keeping this flake
   # genuinely compositor-neutral rather than pulling in one compositor's config generator by default
   # — see profiles/desktop.nix and the README's "The split" section.
@@ -241,10 +241,10 @@
       # ── CONFIG GENERATION ─────────────────────────────────────────────────────────────────
       # home-manager modules that write real dotfiles. None of these install packages either:
       # they assume the named binaries exist, which is the backend's job. None of these is a
-      # compositor's own config module — that job belongs to sibling repos like nixniri.
+      # compositor's own config module — that job belongs to sibling repos like nixciri.
       #
       # `homeManagerModules`, not `homeModules`: home-manager upstream has moved to the shorter
-      # name, but every other project in this family (nixarch, nixniri, nixsh, nixremote) exports
+      # name, but every other project in this family (nixarch, nixciri, nixsh, nixremote) exports
       # `homeManagerModules`, and a consumer importing several of them at once should not have to
       # remember which one is spelled differently. Family consistency wins over upstream fashion.
       homeManagerModules = {
@@ -299,7 +299,7 @@
 
         # The `nixdesktop.startup` contract only — see home/startup.nix's own header. Exported
         # standalone (not folded into `session` or `noctalia`) so a compositor module such as
-        # nixniri can depend on the contract alone, without pulling in this repo's systemd-service
+        # nixciri can depend on the contract alone, without pulling in this repo's systemd-service
         # or noctalia-specific machinery. `session` and `noctalia` both import it themselves too,
         # so a consumer who already has either need not add this on top.
         startup = ./home/startup.nix;

@@ -151,12 +151,43 @@ let
   # ExecStart without needing a fabricated `package` derivation -- exactly the "spell command as an
   # already-absolute path yourself" escape hatch `nixdesktop.launcher.compositors.<n>.command`'s own
   # doc describes.
-  absoluteCompositorOverride = { nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll"; };
+  scrollDescriptor = {
+    command = "/nix/store/fake-scroll-path/bin/scroll";
+    deviceEnvironment = [ "WLR_DRM_DEVICES" ];
+    rendererEnvironment = {
+      auto = { };
+      hardware = { };
+      software.WLR_RENDERER = "pixman";
+    };
+    headlessEnvironment.WLR_BACKENDS = "headless";
+    supportsHeadless = true;
+    supportsVirtualOutputs = true;
+    supportsNotify = false;
+    currentDesktop = "scroll";
+  };
+  absoluteCompositorOverride = {
+    nixdesktop.launcher.compositors.scroll = scrollDescriptor;
+  };
 
-  # Same escape hatch, for niri: gives it an already-absolute `command` so a virtualOutputs
+  # Same escape hatch, for ciri: gives it an already-absolute `command` so a virtualOutputs
   # fixture below trips ONLY the capability assertion under test, never ALSO the unrelated
-  # unresolved-command one (niri's own built-in `command = "niri --session"` is not absolute).
-  niriAbsoluteOverride = { nixdesktop.launcher.compositors.niri.command = "/nix/store/fake-niri-path/bin/niri"; };
+  # unresolved-command one.
+  ciriAbsoluteOverride = {
+    nixdesktop.launcher.compositors.ciri = {
+      command = "/nix/store/fake-ciri-path/bin/ciri";
+      deviceEnvironment = [ ];
+      rendererEnvironment = {
+        auto = { };
+        hardware = { };
+        software.LIBGL_ALWAYS_SOFTWARE = "1";
+      };
+      headlessEnvironment = { };
+      supportsHeadless = false;
+      supportsVirtualOutputs = false;
+      supportsNotify = true;
+      currentDesktop = "ciri";
+    };
+  };
 
   # `vt` LEFT AT ITS DEFAULT (`null`) -- deliberately. This is the workstation's own shape: a seated
   # session whose seat has no VT, which is the estate's real, live case and therefore the one worth
@@ -166,7 +197,7 @@ let
     compositor = "scroll";
     user = "alice";
     delivery = "seated";
-    renderer = "pixman";
+    renderer = "software";
     environment = "primary";
     seat = "seat0";
   } // extra;
@@ -175,17 +206,27 @@ let
     compositor = "scroll";
     user = "alice";
     delivery = "headless";
-    renderer = "pixman";
+    renderer = "software";
   } // extra;
 
   seatedCfg = evalWith (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { }; } ]);
   headlessCfg = evalWith (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.remote = headless { }; } ]);
   unknownCompositorCfg = evalWith (baseModules ++ [ { nixdesktop.sessions.desk = seated { compositor = "mystery"; }; } ]);
 
-  # NO `absoluteCompositorOverride` here, deliberately: the built-in `scroll` default entry leaves
-  # `command = "scroll"` (non-absolute) and `package = null`, which is exactly the unresolved shape
-  # the new assertion exists to catch.
-  unresolvedCommandCfg = evalWith (baseModules ++ [ { nixdesktop.sessions.desk = seated { }; } ]);
+  # Deliberately declares a relative command with no package: exactly the unresolved shape the
+  # assertion exists to catch.
+  unresolvedCommandCfg = evalWith (baseModules ++ [
+    {
+      nixdesktop.launcher.compositors.scroll = {
+        command = "scroll";
+        deviceEnvironment = [ "WLR_DRM_DEVICES" ];
+        rendererEnvironment.software.WLR_RENDERER = "pixman";
+        headlessEnvironment.WLR_BACKENDS = "headless";
+        supportsHeadless = true;
+      };
+    }
+    { nixdesktop.sessions.desk = seated { }; }
+  ]);
 
   # ── VT-BACKED, THE OTHER SEATED SHAPE ─────────────────────────────────────────────────────────
   # primary on the server owns VT 1 (see modules/session.nix's own example) -- `seatdVtBound ==
@@ -230,24 +271,24 @@ let
   ]);
 
   # ── VIRTUAL OUTPUTS: THE CAPABILITY BOUNDARY, PROVEN BOTH WAYS ────────────────────────────────
-  # niri's own built-in row declares `supportsVirtualOutputs = false` (measured fact, see
-  # `builtinCompositors`'s own comment) -- a session naming niri with `virtualOutputs != [ ]` must
-  # fail the build, naming niri, never silently producing a session with no display.
+  # This fixture's descriptor declares `supportsVirtualOutputs = false`; a session naming it with
+  # `virtualOutputs != [ ]` must
+  # fail the build, naming ciri, never silently producing a session with no display.
   vo = [ { width = 1920; height = 1080; } ];
 
-  niriVirtualOutputsCfg = evalWith (baseModules ++ [
-    niriAbsoluteOverride
-    { nixdesktop.sessions.desk = seated { compositor = "niri"; virtualOutputs = vo; }; }
+  ciriVirtualOutputsCfg = evalWith (baseModules ++ [
+    ciriAbsoluteOverride
+    { nixdesktop.sessions.desk = seated { compositor = "ciri"; virtualOutputs = vo; }; }
   ]);
 
   # Same compositor, same override, but NO virtualOutputs declared -- proves the assertion is
-  # keyed on `virtualOutputs != [ ]`, not on "this session merely names niri".
-  niriNoVirtualOutputsCfg = evalWith (baseModules ++ [
-    niriAbsoluteOverride
-    { nixdesktop.sessions.desk = seated { compositor = "niri"; }; }
+  # keyed on `virtualOutputs != [ ]`, not on "this session merely names ciri".
+  ciriNoVirtualOutputsCfg = evalWith (baseModules ++ [
+    ciriAbsoluteOverride
+    { nixdesktop.sessions.desk = seated { compositor = "ciri"; }; }
   ]);
 
-  # scroll's own built-in row declares `supportsVirtualOutputs = true` -- the estate's real
+  # The Scroll integration fixture declares `supportsVirtualOutputs = true`; the estate's real
   # fixture (compositor defaults to "scroll" via the `seated`/`headless` helpers above) must trip
   # no such rejection at all.
   scrollVirtualOutputsCfg = evalWith (baseModules ++ [
@@ -255,25 +296,25 @@ let
     { nixdesktop.sessions.desk = seated { virtualOutputs = vo; }; }
   ]);
 
-  # A consumer can WITHDRAW scroll's own built-in support by restating the field explicitly --
+  # A consumer can WITHDRAW the integration fixture's support with mkForce --
   # proving the assertion actually reads `nixdesktop.launcher.compositors.<name>.
-  # supportsVirtualOutputs`, rather than special-casing the compositor NAME "scroll"/"niri"
+  # supportsVirtualOutputs`, rather than special-casing the compositor NAME "scroll"/"ciri"
   # somewhere it never told us about.
   scrollVirtualOutputsWithdrawnCfg = evalWith (baseModules ++ [
     absoluteCompositorOverride
-    { nixdesktop.launcher.compositors.scroll.supportsVirtualOutputs = false; }
+    { nixdesktop.launcher.compositors.scroll.supportsVirtualOutputs = lib.mkForce false; }
     { nixdesktop.sessions.desk = seated { virtualOutputs = vo; }; }
   ]);
 
   # ── XDG_CURRENT_DESKTOP: THE ONE ESCAPE-HATCH PROOF ─────────────────────────────────────────────
   # `currentDesktop`'s own doc already covers the estate's real fixture (`scroll`, exercised by
-  # `seatedCfg`/`headlessCfg` themselves — no separate fixture needed for that) and niri's
-  # fallback-to-`name` shape (`niriNoVirtualOutputsCfg`, already composed above, reused below rather
+  # `seatedCfg`/`headlessCfg` themselves — no separate fixture needed for that) and ciri's
+  # fallback-to-`name` shape (`ciriNoVirtualOutputsCfg`, already composed above, reused below rather
   # than duplicated). This is the one shape neither already exercises: a consumer overriding the
   # field explicitly, on a compositor whose BUILT-IN row already sets it, and winning.
   currentDesktopOverrideCfg = evalWith (baseModules ++ [
     absoluteCompositorOverride
-    { nixdesktop.launcher.compositors.scroll.currentDesktop = "custom-desktop"; }
+    { nixdesktop.launcher.compositors.scroll.currentDesktop = lib.mkForce "custom-desktop"; }
     { nixdesktop.sessions.desk = seated { }; }
   ]);
 
@@ -509,20 +550,20 @@ let
       countMatching "does not start with an absolute path" (firedMessages seatedCfg) == 0;
 
     # ── VIRTUAL OUTPUTS DECLARED ON A COMPOSITOR THAT CANNOT CREATE ONE FAILS LOUDLY ────────────
-    "a session naming niri with virtualOutputs declared is a build failure" =
-      countMatching "cannot create one" (firedMessages niriVirtualOutputsCfg) == 1;
+    "a session naming ciri with virtualOutputs declared is a build failure" =
+      countMatching "cannot create one" (firedMessages ciriVirtualOutputsCfg) == 1;
 
-    "the niri-virtualOutputs failure names the session and the compositor" =
-      let m = lib.head (matching "cannot create one" (firedMessages niriVirtualOutputsCfg)); in
-      lib.hasInfix "nixdesktop.sessions.desk" m && lib.hasInfix ''compositor "niri"'' m;
+    "the ciri-virtualOutputs failure names the session and the compositor" =
+      let m = lib.head (matching "cannot create one" (firedMessages ciriVirtualOutputsCfg)); in
+      lib.hasInfix "nixdesktop.sessions.desk" m && lib.hasInfix ''compositor "ciri"'' m;
 
-    "the same niri session with NO virtualOutputs declared trips no such rejection" =
-      countMatching "cannot create one" (firedMessages niriNoVirtualOutputsCfg) == 0;
+    "the same ciri session with NO virtualOutputs declared trips no such rejection" =
+      countMatching "cannot create one" (firedMessages ciriNoVirtualOutputsCfg) == 0;
 
-    "a session naming scroll (built-in supportsVirtualOutputs = true) with virtualOutputs declared produces no such failure" =
+    "a session naming a descriptor with virtual-output support produces no such failure" =
       countMatching "cannot create one" (firedMessages scrollVirtualOutputsCfg) == 0;
 
-    "a consumer can explicitly withdraw scroll's own built-in support, and the assertion still fires" =
+    "a consumer can explicitly withdraw the descriptor's support, and the assertion still fires" =
       countMatching "cannot create one" (firedMessages scrollVirtualOutputsWithdrawnCfg) == 1;
 
     # ── A DEVICE NAME SHAPED LIKE THE THING THIS DESIGN FORBIDS ─────────────────────────────────
@@ -558,15 +599,15 @@ let
       && lib.hasInfix "/etc/profiles/per-user/alice/bin" path
       && lib.hasInfix "/usr/bin" path;
 
-    "a compositor with no built-in currentDesktop entry (niri) falls through to its own declared name" =
-      lib.any (e: e == "XDG_CURRENT_DESKTOP=niri")
-        niriNoVirtualOutputsCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment;
+    "a compositor descriptor may use its own declared desktop name" =
+      lib.any (e: e == "XDG_CURRENT_DESKTOP=ciri")
+        ciriNoVirtualOutputsCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment;
 
-    "a consumer can override a built-in compositor's currentDesktop, and the override wins" =
+    "a consumer can override a compositor descriptor's currentDesktop, and the override wins" =
       lib.any (e: e == "XDG_CURRENT_DESKTOP=custom-desktop")
         currentDesktopOverrideCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment;
 
-    "the override does not also leave the built-in value sitting in the same unit" =
+    "the override does not also leave the integration value sitting in the same unit" =
       !(lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll")
         currentDesktopOverrideCfg.systemd.services."nixdesktop-desk".serviceConfig.Environment);
 
@@ -577,10 +618,10 @@ let
       && lib.hasInfix "set-environment \"XDG_SESSION_ID=$session_id\"" (lib.head post);
 
     "a notify compositor imports XDG_SESSION_ID before its graphical-session bridge starts" =
-      let post = niriNoVirtualOutputsCfg.systemd.services."nixdesktop-desk".serviceConfig.ExecStartPost; in
+      let post = ciriNoVirtualOutputsCfg.systemd.services."nixdesktop-desk".serviceConfig.ExecStartPost; in
       lib.length post == 2
       && lib.hasInfix "set-environment" (lib.elemAt post 0)
-      && lib.hasInfix "start niri.service" (lib.elemAt post 1);
+      && lib.hasInfix "start ciri.service" (lib.elemAt post 1);
   };
 
   # ── LAYER THREE: system-manager, LIGHTWEIGHT `evalModules` ────────────────────────────────────
@@ -691,7 +732,7 @@ let
       launcherModuleSystemManager
       {
         nixhost = { resources.gpu = estateInventory; environments.primary.resources.gpu = primaryClaim; };
-        nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll";
+        nixdesktop.launcher.compositors.scroll = scrollDescriptor;
         nixpkgs.hostPlatform = system;
       }
       extraConfig
@@ -818,7 +859,7 @@ let
         # comment for why the ordering proof below needs this REAL rendered text.
         nixdesktop.sessions.desk = seated { vt = 1; permittedDevicePaths = [ sndPath ]; };
         nixdesktop.sessions.remote = headless { };
-        nixdesktop.launcher.compositors.scroll.command = "/nix/store/fake-scroll-path/bin/scroll";
+        nixdesktop.launcher.compositors.scroll = scrollDescriptor;
         system.stateVersion = "24.11";
         boot.isContainer = true;
       }

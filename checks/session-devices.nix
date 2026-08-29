@@ -109,14 +109,14 @@ let
     compositor = "scroll";
     user = "alice";
     delivery = "seated";
-    renderer = "pixman";
+    renderer = "software";
   } // extra;
 
   headless = extra: {
     compositor = "scroll";
     user = "alice";
     delivery = "headless";
-    renderer = "pixman";
+    renderer = "software";
   } // extra;
 
   primary = withNixhost {
@@ -279,7 +279,7 @@ let
         { nixdesktop.sessions.desk = seated { environment = "primary"; } // { permittedDevices = [ "amd" ]; }; }
       ];
 
-    # ── HEADLESS => PIXMAN ────────────────────────────────────────────────────────────────────
+    # ── HEADLESS => SOFTWARE ──────────────────────────────────────────────────────────────────
     # wlroots' headless BACKEND opens no DRM device, but the auto-selected RENDERER still calls
     # open_drm_render_node() and scans the whole system — on this estate that finds the one card
     # the session is forbidden.
@@ -287,13 +287,11 @@ let
       countMatching "is headless but sets"
         (firedMessages (evalSessions { sessions.remote = headless { renderer = "auto"; }; })) == 1;
 
-    "a headless session using gl or vulkan is rejected too" =
+    "a headless session requesting hardware is rejected too" =
       countMatching "is headless but sets"
-        (firedMessages (evalSessions { sessions.remote = headless { renderer = "gl"; }; })) == 1
-      && countMatching "is headless but sets"
-        (firedMessages (evalSessions { sessions.remote = headless { renderer = "vulkan"; }; })) == 1;
+        (firedMessages (evalSessions { sessions.remote = headless { renderer = "hardware"; }; })) == 1;
 
-    "a headless session on pixman is fine" =
+    "a headless session using software rendering is fine" =
       countMatching "is headless but sets" (firedMessages noNixhost) == 0;
 
     # ── SEATED => A DEVICE TO MASTER ──────────────────────────────────────────────────────────

@@ -73,6 +73,11 @@ let
     polkitAgent = { enable = true; command = "/fake/polkit-agent"; };
     idleAndLock = { enable = true; lockAfterSeconds = 300; };
     keyring = { enable = true; gnomeKeyring.enable = true; };
+    readinessBridge = {
+      enable = true;
+      serviceName = "ciri";
+      socketEnvironment = "CIRI_SOCKET";
+    };
     services.custom = { command = "fake-component"; };
   };
 
@@ -97,6 +102,7 @@ let
   }).forever;
 
   bar = wholeDesktop.bar;
+  readinessBridge = wholeDesktop.ciri;
 
   # The defaults, read back off a rendered unit rather than restated as literals here -- the
   # arithmetic assertions below are about what a host ACTUALLY gets, so re-typing the numbers would
@@ -127,6 +133,15 @@ let
     "...including the components that were dead on the measured session" =
       lib.all (n: wholeDesktop ? ${n})
         [ "bar" "notifications" "osd" "idle" "polkit-agent" "cliphist-text" "cliphist-image" ];
+    "the generic readiness bridge uses the integration-supplied service and socket names" =
+      lib.hasInfix "$CIRI_SOCKET" readinessBridge.Service.ExecStart
+      && readinessBridge.Service.Type == "notify"
+      && readinessBridge.Service.NotifyAccess == "all"
+      && readinessBridge.Unit.BindsTo == [ "graphical-session.target" ]
+      && readinessBridge.Unit.Before == [ "graphical-session.target" ];
+    "the readiness bridge is only a socket-watching shell, never a second compositor" =
+      !(lib.hasInfix "ExecStart=ciri" readinessBridge.Service.ExecStart)
+      && readinessBridge.Service.Restart == "no";
     "the polkit agent alone receives GTK4's CPU-side Cairo renderer" =
       lib.elem "GSK_RENDERER=cairo" wholeDesktop."polkit-agent".Service.Environment
       && !(lib.elem "GSK_RENDERER=cairo" wholeDesktop.bar.Service.Environment);

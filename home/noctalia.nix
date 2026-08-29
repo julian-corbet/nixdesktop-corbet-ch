@@ -18,7 +18,7 @@
 #    to evaluate for any consumer not importing that compositor's module, and has no path at all
 #    for a compositor this repo has never heard of -- this module appends a plain shell command to
 #    nixdesktop's own compositor-neutral `nixdesktop.startup` list (home/startup.nix). Whichever
-#    compositor module the consumer pairs this with (nixniri, nixscroll, ...) is expected to read
+#    compositor module the consumer pairs this with (nixciri, nixscroll, ...) is expected to read
 #    `config.nixdesktop.startup` and wrap each entry in its own native startup syntax; see that
 #    option's own doc and the README's startup-contract section. The sleep-1 startup-race guard
 #    waybar historically needed is baked straight into the command string below.
