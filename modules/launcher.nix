@@ -390,16 +390,24 @@ let
       # require that id as `XDG_SESSION_ID` even though they correctly run as user units outside
       # the compositor's own session scope. Ask logind for this user's display session after PAM
       # has opened it, then publish the dynamic id to the user manager before the graphical
-      # session target can start its components. Never guess or persist the boot-local number.
+      # session target can start its components. A compositor replacement briefly leaves the old
+      # session in logind's Display field even after the new process has started. Therefore wait
+      # until that session's Leader is THIS unit's MainPID; importing the merely non-empty old id
+      # makes strict agents such as Soteria reject registration because caller and passed session
+      # differ. Never guess or persist the boot-local number.
       # system-manager's `config.systemd.package` is systemd-minimal, whose bin output does not
       # contain loginctl. On that foreign/FHS plane the host's own systemd is the running authority
       # and its clients live in /usr/bin.
       systemdClientBin =
         if plane == "system-manager" then "/usr/bin" else "${config.systemd.package}/bin";
       importSessionId =
-        "+/bin/sh -c 'session_id=\"$(${systemdClientBin}/loginctl show-user \"${session.user}\" --property=Display --value)\"; "
-        + "if test -z \"$session_id\"; then echo \"nixdesktop: logind reports no display session for ${session.user}; XDG_SESSION_ID was not imported\" >&2; exit 0; fi; "
-        + "exec ${systemdClientBin}/systemctl --machine=\"${session.user}@.host\" --user set-environment \"XDG_SESSION_ID=$session_id\"'";
+        "+/bin/sh -c 'main_pid=\"$(${systemdClientBin}/systemctl show \"nixdesktop-${name}.service\" --property=MainPID --value)\"; "
+        + "attempt=0; while test \"$attempt\" -lt 50; do "
+        + "session_id=\"$(${systemdClientBin}/loginctl show-user \"${session.user}\" --property=Display --value)\"; "
+        + "if test -n \"$session_id\"; then leader=\"$(${systemdClientBin}/loginctl show-session \"$session_id\" --property=Leader --value 2>/dev/null || true)\"; "
+        + "if test \"$leader\" = \"$main_pid\"; then exec ${systemdClientBin}/systemctl --machine=\"${session.user}@.host\" --user set-environment \"XDG_SESSION_ID=$session_id\"; fi; fi; "
+        + "attempt=$((attempt + 1)); sleep 0.1; done; "
+        + "echo \"nixdesktop: logind did not report a display session led by compositor PID $main_pid for ${session.user}; XDG_SESSION_ID was not imported\" >&2; exit 0'";
 
       cardNames = cardNamePathsFor session.permittedDevices;
       envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardNames}" ]) entry.deviceEnvironment;
@@ -592,20 +600,17 @@ let
       # modules/session.nix's own `user` option doc: "never a uid, and never a uid anywhere
       # downstream either").
       #
-      # `${config.systemd.package}/bin/systemctl`, never a bare name or a hardcoded `/usr/bin/
-      # systemctl` -- see this file's header, "ExecStart MUST BE ABSOLUTE": ExecStartPost is
-      # parsed by the identical grammar, and `systemd.package` (confirmed present on both planes
-      # -- this file's header, "TWO PLANES, ONE FILE", already establishes system-manager renders
-      # through the same real nixpkgs systemd module tree NixOS does) is the one spelling that
-      # resolves correctly regardless of which plane composed this module, rather than assuming
-      # `/usr/bin/systemctl` exists (true on the Arch/system-manager plane, unverified on NixOS).
+      # `systemdClientBin`, never a bare name: NixOS uses its configured systemd package, while a
+      # foreign Arch/system-manager host must use /usr/bin. system-manager exposes
+      # `config.systemd.package` as systemd-minimal, whose bin output deliberately omits both
+      # loginctl and systemctl; the running host systemd is the authority on that plane.
       // {
         # The session-id import runs for EVERY seated compositor. The second command is the
         # integration-owned readiness bridge and exists only where the compositor really supports
         # sd_notify. Order is load-bearing: user components must inherit XDG_SESSION_ID before the
         # bridge pulls graphical-session.target in.
         ExecStartPost = [ importSessionId ] ++ lib.optional entry.supportsNotify
-          "+${config.systemd.package}/bin/systemctl --machine=\"${session.user}@.host\" --user start ${session.compositor}.service";
+          "+${systemdClientBin}/systemctl --machine=\"${session.user}@.host\" --user start ${session.compositor}.service";
       };
     };
 

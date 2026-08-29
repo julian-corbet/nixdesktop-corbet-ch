@@ -615,6 +615,9 @@ let
       let post = deskUnit.serviceConfig.ExecStartPost; in
       lib.length post == 1
       && lib.hasInfix "loginctl show-user \"alice\" --property=Display --value" (lib.head post)
+      && lib.hasInfix "systemctl show \"nixdesktop-desk.service\" --property=MainPID --value" (lib.head post)
+      && lib.hasInfix "loginctl show-session \"$session_id\" --property=Leader --value" (lib.head post)
+      && lib.hasInfix "test \"$leader\" = \"$main_pid\"" (lib.head post)
       && lib.hasInfix "set-environment \"XDG_SESSION_ID=$session_id\"" (lib.head post);
 
     "a notify compositor imports XDG_SESSION_ID before its graphical-session bridge starts" =
@@ -632,6 +635,10 @@ let
   seatedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { }; } ]);
   vtBackedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.desk = seated { vt = 1; }; } ]);
   headlessUnsupportedCfgSm = evalWithSystemManager (baseModules ++ [ absoluteCompositorOverride { nixdesktop.sessions.remote = headless { }; } ]);
+  ciriNoVirtualOutputsCfgSm = evalWithSystemManager (baseModules ++ [
+    ciriAbsoluteOverride
+    { nixdesktop.sessions.desk = seated { compositor = "ciri"; }; }
+  ]);
 
   # permittedDevicePaths, same fixture shape as the lightweight NixOS layer above (`sndPath`,
   # `devicePathsCfg`) but composed against the system-manager plane's own stub.
@@ -709,8 +716,16 @@ let
     "SM: the seated unit uses the foreign host's complete systemd clients" =
       let post = lib.head deskUnitSm.serviceConfig.ExecStartPost; in
       lib.hasInfix "/usr/bin/loginctl show-user" post
+      && lib.hasInfix "/usr/bin/loginctl show-session" post
+      && lib.hasInfix "/usr/bin/systemctl show" post
       && lib.hasInfix "exec /usr/bin/systemctl" post
       && !(lib.hasInfix "systemd-minimal" post);
+
+    "SM: a notify compositor also uses the foreign host systemctl for its readiness bridge" =
+      let post = ciriNoVirtualOutputsCfgSm.systemd.services."nixdesktop-desk".serviceConfig.ExecStartPost; in
+      lib.length post == 2
+      && lib.hasPrefix "+/usr/bin/systemctl" (lib.elemAt post 1)
+      && !(lib.hasInfix "systemd-minimal" (lib.elemAt post 1));
 
     "SM: the combined NixOS/FHS PATH renders identically to the NixOS plane" =
       lib.filter (e: lib.hasPrefix "PATH=" e) deskUnitSm.serviceConfig.Environment
