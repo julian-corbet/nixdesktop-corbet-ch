@@ -706,8 +706,11 @@ let
     "SM: the seated unit carries XDG_CURRENT_DESKTOP=scroll, identically to the NixOS plane" =
       lib.any (e: e == "XDG_CURRENT_DESKTOP=scroll") deskUnitSm.serviceConfig.Environment;
 
-    "SM: the seated unit imports logind's display-session id identically to the NixOS plane" =
-      deskUnitSm.serviceConfig.ExecStartPost == deskUnit.serviceConfig.ExecStartPost;
+    "SM: the seated unit uses the foreign host's complete systemd clients" =
+      let post = lib.head deskUnitSm.serviceConfig.ExecStartPost; in
+      lib.hasInfix "/usr/bin/loginctl show-user" post
+      && lib.hasInfix "exec /usr/bin/systemctl" post
+      && !(lib.hasInfix "systemd-minimal" post);
 
     "SM: the combined NixOS/FHS PATH renders identically to the NixOS plane" =
       lib.filter (e: lib.hasPrefix "PATH=" e) deskUnitSm.serviceConfig.Environment
@@ -827,8 +830,8 @@ let
       lib.hasInfix "XDG_CURRENT_DESKTOP=scroll\n" deskUnitTextSm;
 
     "REAL SYSTEM-MANAGER: the rendered seated unit publishes XDG_SESSION_ID to the user manager" =
-      lib.hasInfix "loginctl show-user" deskUnitTextSm
-      && lib.hasInfix "set-environment" deskUnitTextSm
+      lib.hasInfix "/usr/bin/loginctl show-user" deskUnitTextSm
+      && lib.hasInfix "exec /usr/bin/systemctl" deskUnitTextSm
       && lib.hasInfix "XDG_SESSION_ID=" deskUnitTextSm;
   };
 

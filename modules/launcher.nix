@@ -391,10 +391,15 @@ let
       # the compositor's own session scope. Ask logind for this user's display session after PAM
       # has opened it, then publish the dynamic id to the user manager before the graphical
       # session target can start its components. Never guess or persist the boot-local number.
+      # system-manager's `config.systemd.package` is systemd-minimal, whose bin output does not
+      # contain loginctl. On that foreign/FHS plane the host's own systemd is the running authority
+      # and its clients live in /usr/bin.
+      systemdClientBin =
+        if plane == "system-manager" then "/usr/bin" else "${config.systemd.package}/bin";
       importSessionId =
-        "+/bin/sh -c 'session_id=\"$(${config.systemd.package}/bin/loginctl show-user \"${session.user}\" --property=Display --value)\"; "
+        "+/bin/sh -c 'session_id=\"$(${systemdClientBin}/loginctl show-user \"${session.user}\" --property=Display --value)\"; "
         + "if test -z \"$session_id\"; then echo \"nixdesktop: logind reports no display session for ${session.user}; XDG_SESSION_ID was not imported\" >&2; exit 0; fi; "
-        + "exec ${config.systemd.package}/bin/systemctl --machine=\"${session.user}@.host\" --user set-environment \"XDG_SESSION_ID=$session_id\"'";
+        + "exec ${systemdClientBin}/systemctl --machine=\"${session.user}@.host\" --user set-environment \"XDG_SESSION_ID=$session_id\"'";
 
       cardNames = cardNamePathsFor session.permittedDevices;
       envDeviceVars = lib.concatMap (var: [ "${var}=${lib.concatStringsSep ":" cardNames}" ]) entry.deviceEnvironment;
