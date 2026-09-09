@@ -47,7 +47,7 @@
   # needs to know nixhost exists. Same pattern, same reasoning, as nixlxc's own single nixhost
   # input.
   inputs.nixhost = {
-    url = "github:julian-corbet/nixhost-corbet-ch";
+    url = "git+https://github.com/julian-corbet/nixhost-corbet-ch";
     inputs.nixpkgs.follows = "nixpkgs";
   };
 
